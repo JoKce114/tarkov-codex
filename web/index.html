@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>塔科夫百科</title>
+	<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+	<header class="top_bar">
+		<div class="brand" id="brand_home" role="button" tabindex="0" title="返回首页">
+			<svg width="15" height="15" viewBox="0 0 16 16" class="brand_icon"><path d="M2 7l6-5 6 5v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+			<span class="brand_text">首页</span>
+		</div>
+
+		<div class="mode_switch" id="mode_switch"></div>
+
+		<div class="quick_map">
+			<button class="quick_map_btn" id="quick_map_btn">
+				<svg width="14" height="14" viewBox="0 0 16 16" class="quick_map_icon">
+					<path d="M2 3.5l4-1.5 4 1.5 4-1.5v10l-4 1.5-4-1.5-4 1.5v-10z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+					<path d="M6 2v10M10 3.5v10" stroke="currentColor" stroke-width="1.1" opacity="0.55"/>
+				</svg>
+				<span>快速打开地图</span>
+				<svg width="9" height="9" viewBox="0 0 10 10" class="quick_map_arrow">
+					<path d="M1.5 3.5L5 7l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+				</svg>
+			</button>
+			<div class="quick_map_panel" id="quick_map_panel" hidden>
+				<div class="quick_map_head">选择地图，直接在系统看图工具中打开</div>
+				<div class="quick_map_list" id="quick_map_list"></div>
+			</div>
+		</div>
+
+		<div class="search_box" id="search_wrap" hidden>
+			<input type="search" id="search_input" placeholder="搜索物品名称、简称或英文名" autocomplete="off">
+			<select id="sort_select">
+				<option value="name">按名称</option>
+				<option value="priceDesc">价格从高到低</option>
+				<option value="priceAsc">价格从低到高</option>
+				<option value="baseDesc">基础价从高到低</option>
+			</select>
+		</div>
+
+		<div class="actions">
+			<span class="sync_state" id="sync_state">读取中</span>
+			<button class="btn_ghost" id="btn_sync">立即同步</button>
+		</div>
+	</header>
+
+	<main class="home" id="view_home">
+		<section class="home_hero">
+			<h2 class="hero_title" id="hero_title">挑选要查的资料</h2>
+			<p class="hero_sub" id="hero_sub">数据来自 tarkov.dev，本地缓存，离线可查。</p>
+		</section>
+
+		<section class="module_grid" id="module_grid"></section>
+
+		<section class="home_footer">
+			<div class="panel_inline">
+				<div class="panel_inline_title">数据状态</div>
+				<div class="panel_inline_body" id="home_status"></div>
+				<div class="sync_actions">
+					<button class="btn_ghost" id="btn_sync_all">同步游戏数据</button>
+					<button class="btn_ghost" id="btn_sync_guides">同步任务攻略</button>
+					<button class="btn_ghost" id="btn_sync_cdk">同步激活码</button>
+					<button class="btn_ghost" id="btn_sync_maps">同步地图数据</button>
+					<span class="hint_text" id="sync_message"></span>
+				</div>
+			</div>
+		</section>
+	</main>
+
+	<main class="view_items" id="view_items" hidden>	<div class="layout">
+			<aside class="sidebar">
+				<div class="sidebar_head">物品分类</div>
+				<nav class="category_tree" id="category_tree"></nav>
+			</aside>
+
+			<section class="content">
+				<div class="content_head">
+					<button class="btn_back" id="btn_back">← 返回</button>
+					<div class="result_info" id="result_info"></div>
+					<div class="pager" id="pager"></div>
+				</div>
+				<div class="item_grid" id="item_grid"></div>
+				<div class="empty_state" id="empty_state" hidden>没有符合条件的物品</div>
+			</section>
+		</div>
+	</main>
+
+	<main class="view_tasks" id="view_tasks" hidden>
+		<section class="task_filter">
+			<div class="filter_row filter_toggles">
+				<label class="toggle" data-key="hideCompleted">
+					<span class="toggle_text">隐藏已完成</span>
+					<span class="toggle_box"><span class="toggle_dash"></span></span>
+				</label>
+				<label class="toggle" data-key="hideLocked">
+					<span class="toggle_text">隐藏未解锁</span>
+					<span class="toggle_box"><span class="toggle_dash"></span></span>
+				</label>
+				<label class="toggle" data-key="kappa">
+					<span class="toggle_text">Kappa</span>
+					<span class="toggle_box"><span class="toggle_dash"></span></span>
+				</label>
+				<label class="toggle" data-key="lightkeeper">
+					<span class="toggle_text">Lightkeeper</span>
+					<span class="toggle_box"><span class="toggle_dash"></span></span>
+				</label>
+				<label class="level_field">
+					<span class="toggle_text">玩家等级</span>
+					<input type="number" id="player_level" min="1" max="79" value="1">
+				</label>
+				<span class="task_progress" id="task_progress"></span>
+			</div>
+			<div class="filter_row filter_traders">
+				<div class="trader_strip" id="trader_strip"></div>
+				<div class="trader_name_filter">
+					<span class="toggle_text">名称筛选</span>
+					<input type="search" id="task_search" placeholder="按任务名称筛选" autocomplete="off">
+				</div>
+			</div>
+		</section>
+
+		<div class="task_list" id="task_list"></div>
+		<div class="empty_state" id="task_empty" hidden>没有符合条件的任务</div>
+		<div class="task_footer">
+			<div class="result_info" id="task_info"></div>
+			<div class="pager" id="task_pager"></div>
+		</div>
+	</main>
+
+	<main class="view_cdk" id="view_cdk" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_cdk">← 返回</button>
+			<div class="result_info" id="cdk_info"></div>
+			<button class="btn_ghost" id="btn_cdk_sync">刷新激活码</button>
+		</div>
+		<div class="cdk_list" id="cdk_list"></div>
+	</main>
+
+	<main class="view_generic" id="view_traders" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_traders">← 返回</button>
+			<div class="result_info" id="traders_info"></div>
+		</div>
+		<div class="trader_grid" id="trader_grid"></div>
+	</main>
+
+	<main class="view_generic" id="view_barters" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_barters">← 返回</button>
+			<div class="result_info" id="barters_info"></div>
+			<input type="search" class="inline_search" id="barter_search" placeholder="搜索成品或材料名称">
+			<div class="pager" id="barters_pager"></div>
+		</div>
+		<div class="recipe_list" id="barter_list"></div>
+	</main>
+
+	<main class="view_generic" id="view_crafts" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_crafts">← 返回</button>
+			<div class="result_info" id="crafts_info"></div>
+			<input type="search" class="inline_search" id="craft_search" placeholder="搜索产出或材料名称">
+			<div class="pager" id="crafts_pager"></div>
+		</div>
+		<div class="recipe_list" id="craft_list"></div>
+	</main>
+
+	<main class="view_generic" id="view_hideout" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_hideout">← 返回</button>
+			<div class="result_info" id="hideout_info"></div>
+		</div>
+		<div class="hideout_list" id="hideout_list"></div>
+	</main>
+
+	<main class="view_generic" id="view_maps" hidden>
+		<div class="content_head">
+			<button class="btn_back" id="btn_back_maps">← 返回</button>
+			<div class="result_info" id="maps_info"></div>
+			<button class="btn_ghost" id="btn_maps_sync">刷新地图数据</button>
+		</div>
+		<div class="map_page" id="map_page">
+			<aside class="map_sidebar">
+				<div class="map_sidebar_head">地图列表</div>
+				<nav class="map_list" id="map_list"></nav>
+			</aside>
+			<section class="map_main" id="map_main">
+				<div class="map_placeholder" id="map_placeholder">从左侧选择一张地图</div>
+				<div class="map_detail" id="map_detail" hidden>
+					<div class="map_detail_head">
+						<div class="map_detail_title" id="map_title"></div>
+						<div class="map_detail_meta" id="map_meta"></div>
+					</div>
+					<div class="map_image_tabs" id="map_image_tabs"></div>
+					<div class="map_image_wrap">
+						<img id="map_image" alt="">
+					</div>
+					<div class="map_sections" id="map_sections"></div>
+				</div>
+			</section>
+		</div>
+	</main>
+
+	<div class="map_fullviewer" id="map_viewer" hidden>
+		<div class="viewer_bar">
+			<span class="viewer_title" id="viewer_title"></span>
+			<div class="viewer_actions">
+				<button class="btn_ghost" id="viewer_zoom_out">缩小</button>
+				<button class="btn_ghost" id="viewer_zoom_reset">适应窗口</button>
+				<button class="btn_ghost" id="viewer_zoom_in">放大</button>
+				<button class="btn_ghost" id="viewer_external">用系统看图打开</button>
+				<button class="win_close_btn" id="viewer_close" title="关闭">×</button>
+			</div>
+		</div>
+		<div class="viewer_stage" id="viewer_stage">
+			<img id="viewer_image" alt="" draggable="false">
+		</div>
+		<div class="viewer_hint">滚轮缩放 · 按住拖动 · 双击切换全屏 · Esc 关闭</div>
+	</div>
+
+	<div class="drawer_mask" id="drawer_mask" hidden></div>
+	<aside class="drawer" id="drawer" hidden>
+		<button class="drawer_close" id="drawer_close" aria-label="关闭">×</button>
+		<div class="drawer_body" id="drawer_body"></div>
+	</aside>
+
+	<script src="/app.js"></script>
+</body>
+</html>

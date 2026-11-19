@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app import slim
+from app import map_layers, slim
 
 TARGETS = [
 	("data", ("pve", "regular", "pvp-season")),
@@ -31,6 +31,8 @@ def process(path: Path, key: str) -> tuple[int, int]:
 		payload = json.loads(path.read_text(encoding="utf-8"))
 	except (OSError, ValueError):
 		return before, before
+	if key == "maps":
+		map_layers.write_map_layers(path.parent, payload)
 	payload = slim.apply(key, payload)
 	text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 	path.write_text(text, encoding="utf-8")

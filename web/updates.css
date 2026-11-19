@@ -1,0 +1,126 @@
+.update_dialog {
+	width: min(450px, calc(100% - 32px));
+	max-height: 85vh;
+	overflow: auto;
+	border: 1px solid var(--ColorBorder);
+	border-radius: 7px;
+	padding: 18px 22px;
+	background: var(--ColorPanel);
+	color: var(--ColorText);
+	box-shadow: 0 12px 55px #0009;
+	font: inherit;
+}
+
+.update_dialog::backdrop {
+	background: #090806ad;
+}
+
+.update_head,
+.update_details,
+.update_actions,
+.update_pref {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.update_head,
+.update_details {
+	justify-content: space-between;
+}
+
+.update_head h2,
+.update_release h3 {
+	margin: 0;
+	color: var(--ColorGold);
+}
+
+.update_head h2 {
+	font-size: 19px;
+}
+
+.update_dialog button {
+	background: transparent;
+	border: 1px solid var(--ColorBorder);
+	border-radius: 4px;
+	padding: 6px 12px;
+	color: var(--ColorText);
+	font: inherit;
+	cursor: pointer;
+}
+
+.update_dialog .update_close {
+	border: 0;
+	font-size: 20px;
+}
+
+.update_details {
+	margin-top: 19px;
+}
+
+.update_version,
+.update_date,
+.update_intro,
+.update_status {
+	color: var(--ColorTextDim);
+	font-size: 13px;
+}
+
+.update_pref {
+	padding: 10px 0;
+	cursor: pointer;
+}
+
+.update_auto {
+	accent-color: var(--ColorGold);
+}
+
+.update_proxy label {
+	font-size: 13px;
+	color: var(--ColorTextDim);
+}
+
+.update_proxy > div {
+	display: flex;
+	gap: 7px;
+}
+
+.update_proxy_address {
+	min-width: 0;
+	flex: 1;
+	border: 1px solid var(--ColorBorder);
+	border-radius: 4px;
+	background: var(--ColorBg);
+	color: inherit;
+	padding: 5px 8px;
+	font: inherit;
+}
+
+.update_release {
+	margin-top: 14px;
+	border-top: 1px solid var(--ColorBorder);
+	padding-top: 12px;
+}
+
+.update_release h3 {
+	font-size: 15px;
+}
+
+.update_notes {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.update_actions {
+	justify-content: flex-end;
+}
+
+.update_dialog .update_install {
+	background: var(--ColorGold);
+	color: var(--ColorBg);
+}
+
+.update_dialog button:disabled {
+	opacity: 0.6;
+	cursor: wait;
+}

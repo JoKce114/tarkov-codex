@@ -858,10 +858,22 @@ body {
 	background: #1a1714;
 }
 
+.task_guide_filter,
 .level_field {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+}
+
+.task_guide_filter {
+	cursor: pointer;
+}
+
+.task_guide_filter input {
+	width: 20px;
+	height: 20px;
+	margin: 0;
+	accent-color: var(--ColorAccent);
 }
 
 .level_field input {
@@ -2172,8 +2184,43 @@ body {
 	border-top: 1px solid var(--ColorBorder);
 }
 
-.sync_actions .hint_text {
-	margin-left: 6px;
+.sync_history {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 225px), 1fr));
+	gap: 12px 20px;
+	margin: 14px 0 6px;
+}
+
+.sync_history_item {
+	display: grid;
+	align-content: start;
+	gap: 4px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--ColorTextDim);
+}
+
+.sync_history_item strong {
+	color: var(--ColorText);
+}
+
+.sync_history_item .guide_coverage {
+	color: var(--ColorGold);
+	font-weight: 600;
+}
+
+.guide_sync_progress {
+	display: grid;
+	gap: 4px;
+	max-width: 32rem;
+	margin: 12px 0 6px;
+	color: var(--ColorTextDim);
+	font-size: 12px;
+}
+
+.guide_sync_progress progress {
+	width: 100%;
+	accent-color: var(--ColorGold);
 }
 
 

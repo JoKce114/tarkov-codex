@@ -5,8 +5,7 @@ from pathlib import Path
 
 
 def _log_dir() -> Path:
-	base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
-	target = base / "logs"
+	from .paths import LOG_DIR as target
 	target.mkdir(parents=True, exist_ok=True)
 	return target
 

@@ -5,6 +5,9 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>塔科夫百科</title>
 	<link rel="stylesheet" href="/style.css">
+	<link rel="stylesheet" href="/atlas.css">
+	<link rel="stylesheet" href="/bosses.css">
+	<link rel="stylesheet" href="/updates.css">
 </head>
 <body>
 	<header class="top_bar">
@@ -43,8 +46,7 @@
 		</div>
 
 		<div class="actions">
-			<span class="sync_state" id="sync_state">读取中</span>
-			<button class="btn_ghost" id="btn_sync">立即同步</button>
+			<button type="button" class="btn_ghost" id="settings_about">设置 · 关于我们</button>
 		</div>
 	</header>
 
@@ -58,17 +60,29 @@
 
 		<section class="home_footer">
 			<div class="panel_inline">
-				<div class="panel_inline_title">数据状态</div>
+				<div class="panel_inline_title">资料同步 <span class="sync_state" id="sync_state"></span></div>
 				<div class="panel_inline_body" id="home_status"></div>
 				<div class="sync_actions">
-					<button class="btn_ghost" id="btn_sync_all">同步游戏数据</button>
-					<button class="btn_ghost" id="btn_sync_guides">同步任务攻略</button>
-					<button class="btn_ghost" id="btn_sync_cdk">同步激活码</button>
-					<button class="btn_ghost" id="btn_sync_maps">同步地图数据</button>
-					<span class="hint_text" id="sync_message"></span>
+					<button class="btn_primary" data-sync="all">全部同步</button>
+					<button class="btn_ghost" data-sync="game">游戏数据</button>
+					<button class="btn_ghost" data-sync="guides">任务攻略</button>
+					<button class="btn_ghost" data-sync="cdk">激活码</button>
+					<button class="btn_ghost" data-sync="maps">地图与 BOSS</button>
 				</div>
+				<div class="sync_history" id="sync_history"></div>
+				<div class="guide_sync_progress" id="guide_sync_progress" hidden>
+					<label for="guide_sync_bar" id="guide_sync_label">正在同步任务攻略</label>
+					<progress id="guide_sync_bar"></progress>
+					<span id="guide_sync_counts"></span>
+				</div>
+				<span class="hint_text" role="status" id="sync_message"></span>
 			</div>
 		</section>
+	</main>
+
+	<main class="view_generic" id="view_bosses" hidden>
+		<div class="content_head"><button type="button" class="btn_back" id="btn_back_bosses">← 返回</button><h2>BOSS 图鉴</h2></div>
+		<div id="boss_catalog"></div>
 	</main>
 
 	<main class="view_items" id="view_items" hidden>	<div class="layout">
@@ -108,6 +122,10 @@
 					<span class="toggle_text">Lightkeeper</span>
 					<span class="toggle_box"><span class="toggle_dash"></span></span>
 				</label>
+				<label class="task_guide_filter">
+					<input type="checkbox" id="task_has_guide">
+					<span class="toggle_text">仅看有攻略</span>
+				</label>
 				<label class="level_field">
 					<span class="toggle_text">玩家等级</span>
 					<input type="number" id="player_level" min="1" max="79" value="1">
@@ -135,7 +153,6 @@
 		<div class="content_head">
 			<button class="btn_back" id="btn_back_cdk">← 返回</button>
 			<div class="result_info" id="cdk_info"></div>
-			<button class="btn_ghost" id="btn_cdk_sync">刷新激活码</button>
 		</div>
 		<div class="cdk_list" id="cdk_list"></div>
 	</main>
@@ -180,7 +197,7 @@
 		<div class="content_head">
 			<button class="btn_back" id="btn_back_maps">← 返回</button>
 			<div class="result_info" id="maps_info"></div>
-			<button class="btn_ghost" id="btn_maps_sync">刷新地图数据</button>
+			<button type="button" class="btn_primary" id="btn_open_atlas">交互地图</button>
 		</div>
 		<div class="map_page" id="map_page">
 			<aside class="map_sidebar">
@@ -203,6 +220,8 @@
 			</section>
 		</div>
 	</main>
+
+	<section class="map_atlas" id="map_atlas" aria-label="交互地图" hidden></section>
 
 	<div class="map_fullviewer" id="map_viewer" hidden>
 		<div class="viewer_bar">
@@ -227,6 +246,9 @@
 		<div class="drawer_body" id="drawer_body"></div>
 	</aside>
 
+	<script src="/atlas.js"></script>
+	<script src="/updates.js"></script>
+	<script src="/bosses.js"></script>
 	<script src="/app.js"></script>
 </body>
 </html>

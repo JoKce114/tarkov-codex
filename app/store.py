@@ -558,8 +558,11 @@ class DataStore:
 		player_level: int = 1,
 		limit: int = 80,
 		offset: int = 0,
+		guided_task_ids: set[str] | None = None,
+		guided_only: bool = False,
 	) -> dict:
 		completed = completed or set()
+		guided_task_ids = guided_task_ids or set()
 		text = (query or "").strip().lower()
 		with self._lock:
 			source = list(self.tasks.values())
@@ -574,6 +577,8 @@ class DataStore:
 				]
 			if kappa_only:
 				source = [task for task in source if task.get("kappaRequired")]
+			if guided_only:
+				source = [task for task in source if task.get("id") in guided_task_ids]
 			if lightkeeper_only:
 				source = [
 					task
@@ -598,7 +603,10 @@ class DataStore:
 				"total": total,
 				"offset": offset,
 				"limit": limit,
-				"tasks": [self.task_summary(task, completed, player_level) for task in page],
+				"tasks": [
+					{**self.task_summary(task, completed, player_level), "hasGuide": task.get("id") in guided_task_ids}
+					for task in page
+				],
 			}
 
 	def _objective_view(self, objective: dict) -> dict:

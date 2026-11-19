@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+from release import APP_VERSION, create_release
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = ROOT / "build"
@@ -21,13 +21,15 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = r'{root}'
 
+from pathlib import Path
 datas = [
-	(ROOT + r'\\app\\seed', 'seed'),
 	(ROOT + r'\\web', 'web'),
 	(ROOT + r'\\app\\icon.ico', '.'),
 	(ROOT + r'\\app\\icon.png', '.'),
 	(ROOT + r'\\app\\map_config.json', '.'),
 ]
+if (Path(ROOT) / "app" / "seed").is_dir():
+	datas.append((str(Path(ROOT) / "app" / "seed"), "seed"))
 hiddenimports = (
 	collect_submodules('uvicorn')
 	+ collect_submodules('fastapi')
@@ -62,6 +64,7 @@ exe = EXE(
 	upx=False,
 	console=False,
 	icon=ROOT + r'\\app\\icon.ico',
+	version=ROOT + r'\\build\\work\\version_info.txt',
 )
 coll = COLLECT(
 	exe,
@@ -93,18 +96,23 @@ if __name__ == "__main__":
 
 def main() -> None:
 	output_dir = DIST_DIR
-	# 上次的产物可能被资源管理器或杀毒占用，换个目录避免打包失败
-	if output_dir.exists():
-		try:
-			shutil.rmtree(output_dir)
-		except OSError:
-			output_dir = ROOT / "dist_new"
-			if output_dir.exists():
-				shutil.rmtree(output_dir, ignore_errors=True)
-
-	if (BUILD_DIR / "work").exists():
-		shutil.rmtree(BUILD_DIR / "work", ignore_errors=True)
-
+	work = BUILD_DIR / "work"
+	work.mkdir(exist_ok=True)
+	version_tuple = tuple(map(int, APP_VERSION.split("."))) + (0,)
+	version_resource = f"""VSVersionInfo(
+	ffi=FixedFileInfo(filevers={version_tuple}, prodvers={version_tuple}, mask=0x3f, flags=0, OS=0x40004, fileType=1, subtype=0, date=(0, 0)),
+	kids=[
+		StringFileInfo([StringTable('080404B0', [
+			StringStruct('FileDescription', '{APP_NAME}'),
+			StringStruct('FileVersion', '{APP_VERSION}'),
+			StringStruct('ProductName', '{APP_NAME}'),
+			StringStruct('ProductVersion', '{APP_VERSION}'),
+		])]),
+		VarFileInfo([VarStruct('Translation', [2052, 1200])]),
+	],
+)
+"""
+	(work / "version_info.txt").write_text(version_resource, encoding="utf-8")
 	spec_file = BUILD_DIR / "打包.spec"
 	spec_text = SPEC.replace("{root}", str(ROOT).replace("\\", "\\\\")).replace("{name}", APP_NAME)
 	spec_file.write_text(spec_text.strip(), encoding="utf-8")
@@ -133,6 +141,7 @@ def main() -> None:
 	if target.exists():
 		size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
 		print(f"体积: {size / 1048576:.0f} MB")
+		print("中文安装包：", create_release(target))
 
 
 if __name__ == "__main__":

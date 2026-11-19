@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 
@@ -24,26 +25,52 @@ class IconCache:
 		self.icon_dir = icon_dir
 		self._session = requests.Session()
 		self._session.headers.update(ASSET_HEADERS)
-		self._lock = threading.Lock()
+		self._locks = [threading.Lock() for _ in range(24)]
 
 	def local_path(self, item_id: str) -> Path:
 		return self.icon_dir / f"{item_id}.webp"
 
 	def get(self, item_id: str, remote_url: str) -> tuple[bytes, str] | None:
 		target = self.local_path(item_id)
-		if target.exists():
-			return target.read_bytes(), _content_types.get(target.suffix, "image/webp")
-		if not remote_url:
-			return None
-		with self._lock:
+		with self._locks[hash(item_id) % len(self._locks)]:
+			try:
+				payload = target.read_bytes()
+				media = self._media_type(payload)
+				if media:
+					return payload, media
+			except OSError:
+				pass
+			if not remote_url:
+				return None
 			try:
 				response = self._session.get(remote_url, timeout=20)
-				if response.status_code != 200 or not response.content:
-					return None
-				target.write_bytes(response.content)
-				return response.content, response.headers.get("Content-Type", "image/webp")
 			except requests.RequestException:
 				return None
+			media = self._media_type(response.content)
+			if response.status_code != 200 or not media:
+				return None
+			try:
+				target.parent.mkdir(parents=True, exist_ok=True)
+				tmp = target.with_suffix(".part")
+				tmp.write_bytes(response.content)
+				tmp.replace(target)
+			except OSError:
+				logging.getLogger(__name__).warning("无法保存图片 %s", target, exc_info=True)
+			return response.content, media
+
+	@staticmethod
+	def _media_type(payload: bytes) -> str:
+		if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+			return "image/webp"
+		if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+			return "image/png"
+		if payload.startswith(b"\xff\xd8\xff"):
+			return "image/jpeg"
+		if payload.startswith((b"GIF87a", b"GIF89a")):
+			return "image/gif"
+		if payload[4:8] == b"ftyp" and payload[8:12] in (b"avif", b"avis"):
+			return "image/avif"
+		return ""
 
 
 class SvgCache:

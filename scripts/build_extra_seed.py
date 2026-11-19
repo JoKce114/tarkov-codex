@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -15,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.datasets import MODE_ORDER
 SOURCE = ROOT / "data"
 TARGET = ROOT / "app" / "seed"
 
@@ -33,8 +33,10 @@ def main() -> None:
 	copied = []
 
 	# 地图点位数据
-	if copy_file("maps/maps.json"):
-		copied.append("maps/maps.json")
+	for mode in MODE_ORDER:
+		relative = f"maps/{mode}/maps.json"
+		if copy_file(relative):
+			copied.append(relative)
 
 	# 地图预览图（原图不打包，按需下载）
 	preview_dir = SOURCE / "maps" / "images"
@@ -42,18 +44,14 @@ def main() -> None:
 	target_dir.mkdir(parents=True, exist_ok=True)
 	count = 0
 	if preview_dir.is_dir():
-		for image in preview_dir.glob("*-preview.jpg"):
-			shutil.copy2(image, target_dir / image.name)
-			count += 1
-		for image in preview_dir.glob("*-source.webp"):
+		for image in preview_dir.glob("*_thumb.jpg"):
 			shutil.copy2(image, target_dir / image.name)
 			count += 1
 	copied.append(f"maps/images ({count} 张)")
 
 	# 攻略
-	for name in ("tarkovbox.json", "optarkov.json"):
-		if copy_file(f"guides/{name}"):
-			copied.append(f"guides/{name}")
+	if copy_file("guides/optarkov.json"):
+		copied.append("guides/optarkov.json")
 
 	# 攻略截图
 	guide_images = SOURCE / "guide_images"

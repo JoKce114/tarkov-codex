@@ -1,0 +1,163 @@
+#boss_catalog {
+	display: grid;
+	gap: 18px;
+	align-content: start;
+	align-items: start;
+	overflow-y: auto;
+	min-height: 0;
+	flex: 1;
+	padding: 16px 20px 24px;
+}
+
+#boss_catalog > button {
+	justify-self: start;
+}
+
+.boss_grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
+	gap: 12px;
+}
+
+.boss_card, .boss_header, .boss_item {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	text-align: left;
+}
+
+.boss_card, .boss_map, .boss_item {
+	color: inherit;
+	border: 1px solid #66675369;
+	background: #292b25;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.boss_card {
+	padding: 0;
+	overflow: hidden;
+}
+
+.boss_card:hover, .boss_item:hover, .boss_map:hover {
+	border-color: #b5aa7f;
+}
+
+.boss_portrait {
+	display: grid;
+	place-items: center;
+	position: relative;
+	background: #1c201b;
+	isolation: isolate;
+	width: 76px;
+	height: 90px;
+	flex: none;
+}
+
+.boss_portrait img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.boss_initial {
+	color: #b7ad8d;
+	font-size: 24px;
+}
+
+.boss_card_text {
+	display: grid;
+	gap: 3px;
+	min-width: 0;
+	padding: 8px 8px 8px 0;
+}
+
+.boss_card_text small, .boss_card_text span, .boss_empty {
+	color: #b7b9ac;
+}
+
+.boss_card_text span {
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	overflow: hidden;
+	font-size: 12px;
+}
+
+.boss_header .boss_portrait {
+	width: 120px;
+	height: 140px;
+}
+
+.boss_intro p {
+	margin-block: 7px;
+	white-space: pre-line;
+	line-height: 1.7;
+}
+
+.boss_search {
+	width: min(100%, 22rem);
+	padding: 8px 10px;
+}
+
+.boss_section {
+	border-top: 1px solid #77785a55;
+	padding-top: 12px;
+}
+
+.boss_health, .boss_map_list {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.boss_health span, .boss_map, .boss_item {
+	padding: 6px 10px;
+}
+
+.boss_location {
+	flex: 1 1 235px;
+	padding: 10px;
+	border: 1px solid var(--ColorBorder);
+	border-radius: 6px;
+}
+
+.boss_location p {
+	margin: 6px 0 0;
+	color: var(--ColorTextDim);
+	font-size: 13px;
+}
+
+.boss_health span {
+	background: #33362b;
+	border-radius: 3px;
+}
+
+.boss_items {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr));
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.boss_item img {
+	width: 32px;
+	height: 32px;
+	object-fit: contain;
+}
+
+.boss_map:disabled, .boss_item:disabled {
+	opacity: .7;
+	cursor: default;
+}
+
+@media (max-width: 640px) {
+	.boss_header {
+		align-items: flex-start;
+	}
+	.boss_header .boss_portrait {
+		width: 70px;
+		height: 90px;
+	}
+}

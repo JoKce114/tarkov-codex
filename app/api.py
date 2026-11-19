@@ -9,75 +9,19 @@ from fastapi.staticfiles import StaticFiles
 
 from . import paths
 from .assets import IconCache, SvgCache
+from .atlas import atlas_detail, build_task_map, floor_svg, map_catalog, map_geometry, read_tile
 from .cdk import CdkStore
 from .datasets import DEFAULT_MODE, GAME_MODES, MODE_ORDER, is_valid_mode
 from .guides import GuideStore
-from .mapconfig import MapConfig, read_viewbox
+from .home_sync import HomeSync
+from .updates import updates_router
+from .bosses import boss_router
+from .mapconfig import MapConfig
+from .map_icons import map_icons_router
 from .maps import MapStore
 from .progress import ProgressStore
 from .store import DataStore
 from .sync import SyncManager
-
-
-def build_task_map(task: dict, store: DataStore, map_config: MapConfig, svg_cache: SvgCache) -> dict:
-	"""把任务目标里的区域坐标换算成地图矢量图坐标。"""
-	groups: dict[str, dict] = {}
-	for objective in task.get("objectives") or []:
-		description = objective.get("description") or ""
-		for zone in objective.get("zones") or []:
-			position = zone.get("position") or {}
-			if "x" not in position or "z" not in position:
-				continue
-			map_entry = store.maps.get(zone.get("map") or "") or {}
-			normalized = map_entry.get("normalizedName") or ""
-			record = map_config.entry_by_normalized(normalized)
-			if record is None:
-				continue
-
-			svg_text = svg_cache.get(record["key"], record.get("svg") or "")
-			viewbox = read_viewbox(svg_text) if svg_text else None
-			if not viewbox:
-				continue
-			map_config.set_viewbox(record["key"], viewbox[0], viewbox[1])
-
-			point = map_config.to_svg(record["key"], position["x"], position["z"])
-			if point is None:
-				continue
-
-			# 少量数据源坐标本身有误（如 Ground Zero 的 UN Roadblock），落在图外就不画
-			margin_x = viewbox[0] * 0.02
-			margin_y = viewbox[1] * 0.02
-			if not (-margin_x <= point[0] <= viewbox[0] + margin_x):
-				continue
-			if not (-margin_y <= point[1] <= viewbox[1] + margin_y):
-				continue
-
-			group = groups.setdefault(
-				record["key"],
-				{
-					"mapKey": record["normalized"],
-					"mapName": map_entry.get("name") or "",
-					"width": viewbox[0],
-					"height": viewbox[1],
-					"hasSvg": True,
-					"points": [],
-				},
-			)
-			if normalized == record["normalized"]:
-				group["mapName"] = map_entry.get("name") or group["mapName"]
-			size = zone.get("size") or {}
-			group["points"].append(
-				{
-					"x": round(point[0], 1),
-					"y": round(point[1], 1),
-					"label": description,
-					"type": objective.get("type") or "",
-					"optional": bool(objective.get("optional")),
-					"radiusX": round(float(size.get("x") or 0) * 0.5, 1),
-					"radiusZ": round(float(size.get("z") or 0) * 0.5, 1),
-				}
-			)
-	return {"maps": list(groups.values())}
 
 
 def create_app(
@@ -89,6 +33,10 @@ def create_app(
 	map_store: MapStore,
 ) -> FastAPI:
 	app = FastAPI(title=paths.APP_NAME, docs_url=None, redoc_url=None)
+	app.include_router(updates_router())
+	app.include_router(boss_router(store))
+	app.include_router(map_icons_router(store.data_dir))
+	home_sync = HomeSync(store, sync_manager, guides, cdk)
 	icons = IconCache(paths.ICON_DIR)
 	map_config = MapConfig()
 	svg_cache = SvgCache(paths.CACHE_DIR)
@@ -122,6 +70,14 @@ def create_app(
 	@app.get("/api/sync/status")
 	def sync_status() -> dict:
 		return {"ok": True, **sync_manager.status(store.mode)}
+
+	@app.get("/api/home-sync")
+	def home_sync_status():
+		return {"ok": True, **home_sync.status()}
+
+	@app.post("/api/home-sync/{scope}")
+	def home_sync_start(scope: str):
+		return home_sync.start(scope)
 
 	@app.post("/api/sync/now")
 	def sync_now():
@@ -225,6 +181,7 @@ def create_app(
 		lightkeeper: bool = False,
 		limit: int = 80,
 		offset: int = 0,
+		hasGuide: bool = False,
 	) -> dict:
 		snapshot = progress.snapshot(store.mode)
 		return {
@@ -238,6 +195,8 @@ def create_app(
 				hide_locked=hideLocked,
 				kappa_only=kappa,
 				lightkeeper_only=lightkeeper,
+				guided_task_ids=guides.guided_task_ids(),
+				guided_only=hasGuide,
 				completed=set(snapshot["completed"]),
 				player_level=snapshot["playerLevel"],
 				limit=max(1, min(limit, 200)),
@@ -315,6 +274,39 @@ def create_app(
 		]
 		return {"ok": True, "maps": summary, "status": map_store.status()}
 
+	@app.get("/api/atlas")
+	def atlas_maps() -> dict:
+		return {"ok": True, "maps": map_catalog(store.maps, map_config)}
+
+	@app.post("/api/atlas/sync-layers")
+	def sync_atlas_layers():
+		mode = store.mode
+		result = sync_manager.sync_map_layers(mode)
+		if not result.get("ok"):
+			return JSONResponse(result, status_code=503)
+		with store._lock:
+			if store.mode == mode:
+				store.load()
+		return {"ok": True, "mode": mode}
+
+	@app.get("/api/atlas/tile/{map_key}/{zoom}/{column}/{row}")
+	def atlas_tile(map_key: str, zoom: int, column: int, row: int, floor: str = "base"):
+		record = map_config.entry_by_normalized(map_key)
+		payload = read_tile(paths.CACHE_DIR, record, zoom, column, row, floor)
+		if payload is None:
+			return Response(status_code=404)
+		return Response(payload, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+
+	@app.get("/api/atlas/{map_key}")
+	def interactive_map(map_key: str):
+		record = map_config.entry_by_normalized(map_key)
+		if record is None:
+			return JSONResponse({"ok": False, "error": "找不到该交互地图"}, status_code=404)
+		geometry = map_geometry(record, svg_cache)
+		if geometry is None:
+			return JSONResponse({"ok": False, "error": "地图底图加载失败，请检查网络后重试"}, status_code=503)
+		return {"ok": True, **atlas_detail(map_key, record, geometry, map_config, store, progress, svg_cache)}
+
 	@app.get("/api/game-maps/{slug}")
 	def game_map_detail(slug: str):
 		for entry in map_store.maps():
@@ -359,11 +351,13 @@ def create_app(
 		return {"ok": True, "path": str(local)}
 
 	@app.get("/api/map/svg/{map_key}")
-	def map_svg(map_key: str):
+	def map_svg(map_key: str, floor: str = ""):
 		record = map_config.entry_by_normalized(map_key)
 		if record is None:
 			return Response(status_code=404)
 		text = svg_cache.get(record["key"], record.get("svg") or "")
+		if text and floor:
+			text = floor_svg(text, record, floor)
 		if not text:
 			return Response(status_code=404)
 		return Response(content=text, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})

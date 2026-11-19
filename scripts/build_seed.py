@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.datasets import API_BASE, DATASETS, DATASET_KEYS, LANG, MODE_ORDER, file_name, translation_file_name, translation_dataset_key
+from app.sync import slim_payload
 
 HEADERS = {
 	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -53,6 +54,8 @@ def main(modes: list[str]) -> None:
 			spec = DATASETS[key]
 			payload = fetch(f"{API_BASE}/{mode}/{spec['path']}")
 			if payload:
+				if key == "maps":
+					payload = slim_payload(key, payload, target_dir)
 				(target_dir / file_name(key)).write_bytes(payload)
 				total += len(payload)
 				print(f"  {key:10s} {len(payload):>10,} B")

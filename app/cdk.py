@@ -89,9 +89,10 @@ class CdkStore:
 			return {"ok": True, "count": len(active), "syncedAt": self.payload["syncedAt"]}
 
 	def status(self) -> dict:
-		with self._lock:
-			return {
-				"syncedAt": self.payload.get("syncedAt", ""),
-				"count": len(self.payload.get("items") or []),
-				"intervalSeconds": SYNC_INTERVAL,
-			}
+		# 同步成功后整体替换 payload，首页可在网络请求期间读取上次结果。
+		payload = self.payload
+		return {
+			"syncedAt": payload.get("syncedAt", ""),
+			"count": len(payload.get("items") or []),
+			"intervalSeconds": SYNC_INTERVAL,
+		}

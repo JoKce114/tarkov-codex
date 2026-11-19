@@ -4,7 +4,6 @@ import json
 import math
 import re
 import threading
-from pathlib import Path
 
 from . import paths
 
@@ -51,22 +50,40 @@ class MapConfig:
 						"key": entry.get("key"),
 						"normalized": group.get("normalizedName"),
 						"bounds": entry.get("bounds"),
+						"svgBounds": entry.get("svgBounds"),
 						"rotation": entry.get("coordinateRotation") or 0,
 						"svg": entry.get("svgPath"),
 						"svgLayer": entry.get("svgLayer"),
+						"labels": entry.get("labels") or [],
+						"author": entry.get("author") or "",
+						"tilePath": entry.get("tilePath") or "",
+						"tileSize": entry.get("tileSize") or 256,
+						"transform": entry.get("transform"),
+						"floors": {},
 						"width": 0.0,
 						"height": 0.0,
 					}
+					for index, layer in enumerate(entry.get("layers") or []):
+						if layer.get("tilePath") and layer["tilePath"] == record["tilePath"]:
+							record["baseName"] = layer.get("name")
+						elif layer.get("tilePath") or layer.get("svgLayer"):
+							record["floors"][f"floor-{index}"] = layer
 					self._interactive[record["key"]] = record
 					self._by_normalized[record["normalized"]] = record
 					# 夜间工厂、零号区 21+ 这类变体与基础图共用同一套几何
 					for alias in entry.get("altMaps") or []:
 						self._by_normalized[alias] = record
+					if record["normalized"] == "ground-zero":
+						self._by_normalized["ground-zero-tutorial"] = record
 			self._loaded = True
 
 	def entry_by_normalized(self, normalized: str) -> dict | None:
 		self._ensure()
 		return self._by_normalized.get(normalized or "")
+
+	def entries(self) -> list[dict]:
+		self._ensure()
+		return list(self._interactive.values())
 
 	def key_by_normalized(self, normalized: str) -> str:
 		record = self.entry_by_normalized(normalized)
@@ -79,16 +96,19 @@ class MapConfig:
 			record["width"] = width
 			record["height"] = height
 
-	def to_svg(self, key: str, x: float, z: float) -> tuple[float, float] | None:
+	def to_svg(
+		self, key: str, x: float, z: float, viewport: tuple[float, float] | None = None,
+		*, bounds: list | None = None,
+	) -> tuple[float, float] | None:
 		self._ensure()
 		record = self._interactive.get(key)
 		if not record or not record.get("bounds"):
 			return None
-		width, height = record.get("width") or 0.0, record.get("height") or 0.0
+		width, height = viewport or (record.get("width") or 0.0, record.get("height") or 0.0)
 		if width <= 0 or height <= 0:
 			return None
 
-		bounds = record["bounds"]
+		bounds = bounds or record["bounds"]
 		rotation = record["rotation"]
 		lng_min, lng_max = bounds[1][0], bounds[0][0]
 		lat_min, lat_max = bounds[0][1], bounds[1][1]
@@ -109,14 +129,34 @@ class MapConfig:
 		)
 
 
-def read_viewbox(svg_text: str) -> tuple[float, float] | None:
-	match = re.search(r'viewBox\s*=\s*"([^"]+)"', svg_text[:2000])
+def svg_viewbox(svg_text: str) -> tuple[float, float, float, float] | None:
+	root = re.search(r"<svg\b[^>]*>", svg_text[:8192])
+	match = re.search(r"""\bviewBox\s*=\s*(["'])([^"']+)\1""", root[0]) if root else None
 	if not match:
 		return None
-	parts = match.group(1).replace(",", " ").split()
+	parts = match.group(2).replace(",", " ").split()
 	if len(parts) != 4:
 		return None
 	try:
-		return float(parts[2]), float(parts[3])
+		x, y, width, height = map(float, parts)
 	except ValueError:
 		return None
+	if min(width, height) <= 0 or not all(math.isfinite(value) for value in (x, y, width, height)):
+		return None
+	return x, y, width, height
+
+
+def read_viewbox(svg_text: str) -> tuple[float, float] | None:
+	box = svg_viewbox(svg_text)
+	return box[2:] if box else None
+
+
+def tile_viewport(record: dict, zoom: int, bounds: list | None = None) -> tuple[float, float, float, float]:
+	"""Leaflet 的世界像素边界，瓦片编号与点位共用这套原点与尺度。"""
+	scale_x, margin_x, scale_y, margin_y = record["transform"]
+	pixels = []
+	for x, z in bounds or record["bounds"]:
+		x, z = _rotate(x, z, record["rotation"])
+		pixels.append(((scale_x * x + margin_x) * 2**zoom, (margin_y - scale_y * z) * 2**zoom))
+	(first_x, first_y), (last_x, last_y) = pixels
+	return min(first_x, last_x), min(first_y, last_y), abs(last_x - first_x), abs(last_y - first_y)

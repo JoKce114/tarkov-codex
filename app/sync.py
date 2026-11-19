@@ -9,7 +9,8 @@ from pathlib import Path
 
 import requests
 
-from . import slim
+from . import map_layers, slim
+from .maps import has_catalog_source, write_catalog
 from .datasets import (
 	API_BASE,
 	DATASETS,
@@ -17,6 +18,7 @@ from .datasets import (
 	DATASET_KEYS,
 	LANG,
 	file_name,
+	is_valid_mode,
 	translation_file_name,
 	translation_dataset_key,
 )
@@ -61,14 +63,25 @@ def mode_dir(data_dir: Path, mode: str) -> Path:
 	return data_dir / mode
 
 
-def slim_payload(key: str, raw: bytes) -> bytes:
+def slim_payload(key: str, raw: bytes, folder: Path | None = None) -> bytes:
 	"""落盘前精简，避免每次启动加载用不到的大字段。"""
+	if key == translation_dataset_key("maps"):
+		table = json.loads(raw)
+		if not isinstance(table, dict) or not isinstance(table.get("data"), dict):
+			raise ValueError("地图翻译格式无效")
+		return raw
 	if key not in ("items", "maps", "tasks"):
 		return raw
 	try:
 		payload = json.loads(raw.decode("utf-8"))
 	except (ValueError, UnicodeDecodeError):
+		if key == "maps" and folder is not None:
+			raise ValueError("地图数据格式无效")
 		return raw
+	if key == "maps" and folder is not None and not map_layers.write_map_layers(folder, payload):
+		raise ValueError("地图数据缺少点位")
+	if key == "maps" and folder is not None:
+		write_catalog(folder, payload)
 	payload = slim.apply(key, payload)
 	return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -105,6 +118,7 @@ class SyncManager:
 	def status(self, mode: str) -> dict:
 		mode_entry = self.meta.get(mode) or {}
 		return {
+			"checks": dict(self.meta.get("checks", {}).get(mode) or {}),
 			"mode": mode,
 			"running": self._running,
 			"intervalSeconds": SYNC_INTERVAL,
@@ -140,21 +154,55 @@ class SyncManager:
 	def _sync_one(self, mode: str, key: str, url_path: str, force: bool) -> dict:
 		mode_entry = self._mode_meta(mode)
 		entry = mode_entry.get(key, {})
-		etag = "" if force else entry.get("etag", "")
+		folder = mode_dir(self.data_dir, mode)
+		target = folder / file_name(key)
+		etag = "" if force or not target.is_file() else entry.get("etag", "")
+		if key == "maps" and (
+			entry.get("layerCache") != map_layers.CACHE_FILE
+			or not map_layers.has_map_layers(folder)
+			or not has_catalog_source(folder)
+		):
+			etag = ""
 		response = self._request(f"{API_BASE}/{mode}/{url_path}", etag)
 		if response.status_code == 304:
 			return {"mode": mode, "key": key, "changed": False, "bytes": 0}
 		if response.status_code == 404:
 			return {"mode": mode, "key": key, "changed": False, "bytes": 0, "missing": True}
 		payload = response.content
-		payload = slim_payload(key, payload)
-		write_bytes(mode_dir(self.data_dir, mode) / file_name(key), payload)
+		payload = slim_payload(key, payload, folder)
+		write_bytes(target, payload)
+		if key in ("maps_zh", "items_zh") and has_catalog_source(folder):
+			write_catalog(folder)
 		mode_entry[key] = {
 			"etag": response.headers.get("ETag", ""),
 			"syncedAt": now_text(),
 			"bytes": len(payload),
 		}
+		if key == "maps":
+			mode_entry[key]["layerCache"] = map_layers.CACHE_FILE
 		return {"mode": mode, "key": key, "changed": True, "bytes": len(payload)}
+
+	def sync_map_layers(self, mode: str) -> dict:
+		if not is_valid_mode(mode):
+			return {"ok": False, "error": "无效的游戏模式"}
+		with self._lock:
+			if self._running:
+				return {"ok": False, "error": "正在同步数据"}
+			self._running = True
+		try:
+			for key in ("maps", translation_dataset_key("maps")):
+				result = self._sync_one(mode, key, key, False)
+				if result.get("missing"):
+					return {"ok": False, "error": f"地图数据源缺少 {key}"}
+			self.meta.setdefault("checks", {}).setdefault(mode, {})["maps"] = {"lastSuccessfulAt": now_text()}
+			write_meta(self.meta_file, self.meta)
+			self.last_finished_at = self._latest_synced_at()
+			return {"ok": True}
+		except (OSError, ValueError, RuntimeError, TypeError, AttributeError) as error:
+			return {"ok": False, "error": str(error)}
+		finally:
+			with self._lock:
+				self._running = False
 
 	def sync_mode(self, mode: str, force: bool = False) -> dict:
 		started = time.monotonic()
@@ -170,7 +218,18 @@ class SyncManager:
 					)
 			except Exception as error:
 				errors.append({"mode": mode, "key": key, "error": str(error)})
+		for item in results:
+			if item.get("missing") and not (mode_dir(self.data_dir, mode) / file_name(item["key"])).is_file():
+				errors.append({"mode": mode, "key": item["key"], "error": "来源缺少此数据集"})
 		changed = [item["key"] for item in results if item.get("changed")]
+		finished_at = now_text()
+		checks = self.meta.setdefault("checks", {}).setdefault(mode, {})
+		if not errors:
+			checks["game"] = {"lastSuccessfulAt": finished_at, "changedCount": len(changed)}
+		if not any(row["key"] == "maps" for row in errors) and not any(
+			item.get("missing") and item["key"] in ("maps", translation_dataset_key("maps")) for item in results
+		):
+			checks["maps"] = {"lastSuccessfulAt": finished_at}
 		return {
 			"ok": not errors,
 			"mode": mode,
@@ -178,7 +237,7 @@ class SyncManager:
 			"changedCount": len(changed),
 			"errors": errors,
 			"seconds": round(time.monotonic() - started, 2),
-			"finishedAt": now_text(),
+			"finishedAt": finished_at,
 		}
 
 	def sync_all(self, force: bool = False) -> dict:
@@ -232,6 +291,17 @@ def seed_if_missing(data_dir: Path, seed_dir: Path) -> int:
 			continue
 		relative = source.relative_to(seed_dir)
 		target = data_dir / relative
+		if len(relative.parts) == 2 and is_valid_mode(relative.parts[0]) and source.name == "maps.json":
+			# 老出厂包可能只有完整 maps.json，而用户的本地地图已精简。
+			if not map_layers.has_map_layers(target.parent):
+				map_layers.restore_map_layers(target.parent, target)
+				if not (source.parent / map_layers.CACHE_FILE).is_file():
+					map_layers.restore_map_layers(target.parent, source)
+			if not target.exists():
+				payload = slim_payload("maps", source.read_bytes())
+				write_bytes(target, payload)
+				copied += 1
+			continue
 		if target.exists():
 			continue
 		target.parent.mkdir(parents=True, exist_ok=True)

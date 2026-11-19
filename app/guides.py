@@ -1,405 +1,412 @@
+"""从 OPtarkov 任务站点地图同步攻略与实景截图。"""
+
 from __future__ import annotations
 
-"""抓取任务攻略。
-
-两个来源：
-- tarkovbox：任务详情页内嵌 Nuxt 数据，按 slug 或英文名匹配
-- optarkov：任务详情页内嵌 Nuxt 数据，附带中文标注的实景截图
-"""
-
+import hashlib
 import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote, urljoin, urlsplit
+from xml.etree import ElementTree
 
 import requests
 
-from .paths import DATA_DIR
+from .assets import ASSET_HEADERS
+from .datasets import MODE_ORDER
+from .store import DataStore
 
-GUIDE_DIR = DATA_DIR / "guides"
-IMAGE_DIR = DATA_DIR / "guide_images"
+HOME = "https://www.optarkov.com"
+SITEMAP = HOME + "/sitemap.xml"
+DETAIL = HOME + "/wiki/task/"
 SYNC_INTERVAL = 7 * 24 * 60 * 60
-TIMEOUT = 40
-RETRY = 3
-
-HEADERS = {
-	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Accept-Language": "zh-CN,zh;q=0.9",
-}
-
-SOURCES = {
-	"tarkovbox": {
-		"name": "TarkovBox",
-		"home": "https://www.tarkovbox.com/gamewiki/tasks",
-		"detail": "https://www.tarkovbox.com/gamewiki/tasks/{slug}",
-	},
-	"optarkov": {
-		"name": "OPtarkov",
-		"home": "https://www.optarkov.com/tasks",
-		"detail": "https://www.optarkov.com/wiki/task/{id}",
-	},
-}
+WORKERS = 4
+HEADERS = {**ASSET_HEADERS, "Referer": HOME + "/", "Accept": "*/*", "Accept-Language": "zh-CN,zh;q=0.9"}
 
 
 def now_text() -> str:
 	return datetime.now().isoformat(timespec="seconds")
 
 
-def slugify(text: str) -> str:
-	text = (text or "").lower().replace("'", "").replace("’", "")
-	text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-	return text
+def slugify(value: str) -> str:
+	return re.sub(r"[^a-z0-9]+", "-", value.lower().replace("'", "").replace("’", "")).strip("-")
 
 
-def strip_tags(text: str) -> str:
-	text = re.sub(r"<[^>]+>", " ", text or "")
-	text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-	return re.sub(r"[ \t]+", " ", text).strip()
+def sitemap_tasks(source: str) -> dict[str, str]:
+	root = ElementTree.fromstring(source)
+	pages = {}
+	for entry in root.findall("{*}url"):
+		url = entry.findtext("{*}loc", "").strip()
+		match = re.fullmatch(re.escape(DETAIL) + r"([0-9]+)/?", url)
+		if match:
+			pages[match[1]] = entry.findtext("{*}lastmod", "").strip()
+	if not pages:
+		raise ValueError("OPtarkov 站点地图没有任务页面")
+	return pages
 
 
-def deref(data: list, value, depth: int = 0, seen: frozenset | None = None):
-	"""Nuxt 载荷用索引互相引用，逐层解开。"""
-	if seen is None:
-		seen = frozenset()
-	if depth > 14:
-		return value
-	if isinstance(value, int):
-		if value in seen or not (0 <= value < len(data)):
+def image_url(remote: str) -> str:
+	url = urljoin(HOME + "/", remote)
+	parts = urlsplit(url)
+	path = unquote(parts.path)
+	if (
+		parts.scheme != "https" or parts.netloc != "www.optarkov.com"
+		or not path.startswith("/images/") or ".." in path.split("/") or "\\" in path
+		or Path(path).suffix.lower() not in (".webp", ".png", ".jpg", ".jpeg", ".gif", ".avif")
+	):
+		return ""
+	return url
+
+
+def parse_guide(html: str, number: str) -> dict:
+	match = re.search(r'<script\b[^>]*\bid=["\']__NUXT_DATA__["\'][^>]*>(.*?)</script>', html, re.S)
+	if not match:
+		raise ValueError("缺少任务页面数据")
+	table = json.loads(match[1])
+	key = "wiki-task-meta-" + number
+	ref = next((entry[key] for entry in table if isinstance(entry, dict) and key in entry), None)
+	if not isinstance(ref, int) or not 0 <= ref < len(table) or not isinstance(table[ref], dict):
+		raise ValueError("任务页编号与内容不符")
+
+	def resolve(index: int, depth: int = 0):
+		if type(index) is not int or not 0 <= index < len(table) or depth > 14:
 			return None
-		return deref(data, data[value], depth + 1, seen | {value})
-	if isinstance(value, list):
-		if len(value) == 2 and isinstance(value[0], str) and value[0].endswith("Reactive"):
-			return deref(data, value[1], depth + 1, seen)
-		return [deref(data, item, depth + 1, seen) for item in value]
-	if isinstance(value, dict):
-		return {key: deref(data, item, depth + 1, seen) for key, item in value.items()}
-	return value
+		node = table[index]
+		if isinstance(node, dict):
+			return {key: resolve(value, depth + 1) for key, value in node.items()}
+		if isinstance(node, list):
+			return [resolve(value, depth + 1) for value in node]
+		return node
 
-
-def read_nuxt(source: str) -> list | None:
-	start = source.find('id="__NUXT_DATA__"')
-	if start == -1:
-		return None
-	chunk_start = source.find(">", start) + 1
-	chunk_end = source.find("</script>", chunk_start)
-	if chunk_end == -1:
-		return None
-	try:
-		return json.loads(source[chunk_start:chunk_end])
-	except ValueError:
-		return None
+	task = resolve(ref)
+	if not task.get("name") and not task.get("localizedName"):
+		raise ValueError("缺少任务名称")
+	sections = []
+	for field, kind in (("tips", "tip"), ("how_to", "howto")):
+		for value in task.get(field) or []:
+			if isinstance(value, str) and value.strip():
+				sections.append({"type": kind, "text": value.strip()})
+	for group in task.get("detail") or []:
+		if not isinstance(group, dict):
+			continue
+		images = []
+		for remote in group.get("img") or []:
+			url = image_url(remote) if isinstance(remote, str) else ""
+			if url:
+				images.append({"url": url, "local": url.removeprefix(HOME + "/")})
+		if images:
+			sections.append({"type": "image", "title": group.get("title") or "", "images": images})
+	link = task.get("link")
+	if isinstance(link, str) and urlsplit(link).scheme in ("http", "https") and urlsplit(link).netloc:
+		sections.append({"type": "video", "url": link})
+	return {
+		"url": DETAIL + number, "english": task.get("name") or "", "title": task.get("localizedName") or "",
+		"sections": sections,
+	}
 
 
 class GuideStore:
-	def __init__(self, data_store) -> None:
+	def __init__(self, data_store: DataStore) -> None:
 		self.data_store = data_store
+		self.path = data_store.data_dir / "guides" / "optarkov.json"
+		self.image_dir = data_store.data_dir / "guide_images"
 		self._lock = threading.RLock()
-		self._session = requests.Session()
-		self._session.headers.update(HEADERS)
 		self._image_lock = threading.Lock()
+		self._local = threading.local()
+		self._snapshot = {}
+		self._snapshot_key = None
 		self._syncing = False
-		self.last_result: dict = {}
-		GUIDE_DIR.mkdir(parents=True, exist_ok=True)
-		IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+		self.last_result = {}
+		self._progress = {}
 
-	def _guide_path(self, source: str) -> Path:
-		return GUIDE_DIR / f"{source}.json"
+	def _session(self) -> requests.Session:
+		if not hasattr(self._local, "session"):
+			self._local.session = requests.Session()
+			self._local.session.headers.update(HEADERS)
+		return self._local.session
 
-	def _read(self, source: str) -> dict:
-		try:
-			data = json.loads(self._guide_path(source).read_text(encoding="utf-8"))
-			return data if isinstance(data, dict) else {}
-		except (OSError, ValueError):
-			return {}
+	def _read(self) -> dict:
+		with self._lock:
+			try:
+				info = self.path.stat()
+				key = (info.st_mtime_ns, info.st_size, info.st_ino)
+				if key != self._snapshot_key:
+					value = json.loads(self.path.read_bytes())
+					self._snapshot = value if isinstance(value, dict) else {}
+					self._snapshot_key = key
+				return self._snapshot
+			except (OSError, ValueError):
+				return {}
 
-	def _write(self, source: str, payload: dict) -> None:
-		target = self._guide_path(source)
-		tmp = target.with_suffix(".json.tmp")
-		tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-		tmp.replace(target)
+	def _write(self, payload: dict) -> None:
+		self.path.parent.mkdir(parents=True, exist_ok=True)
+		temp = self.path.with_suffix(".json.tmp")
+		temp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+		temp.replace(self.path)
 
-	ORDER = ("optarkov", "tarkovbox")
+	def _fetch(self, url: str) -> str | None:
+		for attempt in range(3):
+			try:
+				response = self._session().get(url, timeout=(6, 20))
+				response.raise_for_status()
+				return response.content.decode("utf-8-sig")
+			except (requests.RequestException, UnicodeError):
+				if attempt < 2:
+					time.sleep(0.4 * (attempt + 1))
+		return None
+
+	def _read_page(self, number: str) -> dict:
+		html = self._fetch(DETAIL + number)
+		if html is None:
+			raise ValueError("任务页请求失败")
+		return parse_guide(html, number)
+
+	def _task_names(self) -> tuple[dict, dict, dict, dict]:
+		english, variants, localized, wiki_titles = {}, {}, {}, {}
+		with self.data_store._lock:
+			current = self.data_store.mode
+			tasks = dict(self.data_store.tasks)
+		for mode in MODE_ORDER:
+			if mode == current and tasks:
+				continue
+			folder = self.data_store.data_dir / mode
+			try:
+				source = json.loads((folder / "tasks.json").read_bytes())["data"]["tasks"]
+			except (OSError, ValueError, KeyError):
+				continue
+			try:
+				names = json.loads((folder / "tasks_zh.json").read_bytes()).get("data") or {}
+			except (OSError, ValueError):
+				names = {}
+			for task_id, task in source.items():
+				name = task.get("name")
+				tasks.setdefault(task_id, {
+					"name": names.get(name) or name, "normalizedName": task.get("normalizedName"),
+					"wikiLink": task.get("wikiLink"),
+				})
+		for task_id, task in tasks.items():
+			slug = task.get("normalizedName") or ""
+			name = task.get("name") or ""
+			if slug:
+				english.setdefault(slug, set()).add(task_id)
+				base = re.sub(r"-(bear|usec|pve-zone|pvp-zone)$", "", slug)
+				if base != slug:
+					variants.setdefault(base, set()).add(task_id)
+			if name:
+				localized.setdefault(name, set()).add(task_id)
+			# Wiki 标题保留了部分任务在中文同名时省略的转生阶段。
+			link = task.get("wikiLink")
+			if isinstance(link, str) and link.startswith("https://escapefromtarkov.fandom.com/wiki/"):
+				title = unquote(urlsplit(link).path.removeprefix("/wiki/")).replace("_", " ")
+				if title:
+					wiki_titles.setdefault(slugify(title), set()).add(task_id)
+		return english, variants, localized, wiki_titles
+
+	@staticmethod
+	def _available_entry(ref, pages: dict) -> dict | None:
+		entry = pages.get(ref) if isinstance(ref, str) else ref
+		if not isinstance(entry, dict) or not entry.get("url"):
+			return None
+		for section in entry.get("sections") or []:
+			if not isinstance(section, dict):
+				continue
+			kind = section.get("type")
+			if kind in ("text", "table", "tip", "howto") and (section.get("text") or "").strip():
+				return entry
+			if kind == "image" and any(
+				isinstance(image, dict) and image_url(image.get("local") or image.get("url") or "")
+				for image in section.get("images") or []
+			):
+				return entry
+			if kind == "video" and re.match(r"^https?://[^/\s]+", section.get("url") or ""):
+				return entry
+		return None
+
+	def guided_task_ids(self) -> set[str]:
+		payload = self._read()
+		pages = payload.get("pages") or {}
+		return {task_id for task_id, ref in (payload.get("byTask") or {}).items() if self._available_entry(ref, pages)}
 
 	def get(self, task_id: str) -> list[dict]:
-		"""按任务 ID 取两家来源的攻略，OPtarkov 排在前。"""
-		result = []
-		for source in self.ORDER:
-			meta = SOURCES[source]
-			payload = self._read(source)
-			entry = (payload.get("byTask") or {}).get(task_id)
-			if not entry:
-				continue
-			result.append(
-				{
-					"source": source,
-					"sourceName": meta["name"],
-					"sourceUrl": entry.get("url") or meta["home"],
-					"updatedAt": entry.get("updatedAt") or "",
-					"title": entry.get("title") or "",
-					"summary": entry.get("summary") or "",
-					"sections": entry.get("sections") or [],
-				}
-			)
-		return result
+		payload = self._read()
+		entry = self._available_entry((payload.get("byTask") or {}).get(task_id), payload.get("pages") or {})
+		if entry is None:
+			return []
+		return [{
+			"source": "optarkov", "sourceName": "OPtarkov", "sourceUrl": entry["url"],
+			"updatedAt": entry.get("lastmod") or entry.get("updatedAt") or "", "title": entry.get("title") or "",
+			"summary": entry.get("summary") or "", "sections": entry.get("sections") or [],
+		}]
 
 	def status(self) -> dict:
 		with self._lock:
-			summary = {}
-			for source, meta in SOURCES.items():
-				payload = self._read(source)
-				summary[source] = {
-					"name": meta["name"],
-					"syncedAt": payload.get("syncedAt") or "",
-					"count": len(payload.get("byTask") or {}),
-				}
-			return {"sources": summary, "intervalSeconds": SYNC_INTERVAL, "syncing": self._syncing, "lastResult": self.last_result}
-
-	def _fetch(self, url: str) -> str | None:
-		for attempt in range(RETRY):
-			try:
-				response = self._session.get(url, timeout=TIMEOUT)
-				if response.status_code == 200:
-					return response.text
-			except requests.RequestException:
-				pass
-			if attempt < RETRY - 1:
-				time.sleep(3)
-		return None
-
-	# ---------- TarkovBox ----------
-
-	def _tarkovbox_index(self) -> list[dict]:
-		cards = []
-		pattern = re.compile(
-			r'href="/gamewiki/tasks/([a-z0-9-]+)"[\s\S]*?'
-			r'<p class="quest-card__secondary"[^>]*>([^<]*)</p>'
-		)
-		traders = (
-			"prapor", "therapist", "fence", "skier", "peacekeeper", "mechanic",
-			"ragman", "jaeger", "lightkeeper", "ref", "btr-driver",
-		)
-		for trader in traders:
-			html = self._fetch(f"https://www.tarkovbox.com/gamewiki/tasks/traders/{trader}")
-			if not html:
-				continue
-			for slug, english in pattern.findall(html):
-				if slug in ("relations", "collector-items"):
-					continue
-				cards.append({"slug": slug, "english": english.strip()})
-			time.sleep(0.3)
-		seen = {}
-		for card in cards:
-			seen.setdefault(card["slug"], card)
-		return list(seen.values())
-
-	def _tarkovbox_guide(self, card: dict) -> dict | None:
-		html = self._fetch(SOURCES["tarkovbox"]["detail"].format(slug=card["slug"]))
-		if not html:
-			return None
-		data = read_nuxt(html)
-		if not data:
-			return None
-		root = deref(data, 1)
-		if not isinstance(root, dict):
-			return None
-		inner = root.get("data") or {}
-		if isinstance(inner, list):
-			inner = inner[0] if inner else {}
-		if not isinstance(inner, dict):
-			return None
-
-		for ref in inner.values():
-			detail = deref(data, ref)
-			if not isinstance(detail, dict):
-				continue
-			body = deref(data, detail.get("data"))
-			if not isinstance(body, dict):
-				continue
-			guide = body.get("guide")
-			if not isinstance(guide, dict):
-				continue
-			sections = []
-			for section in guide.get("sections") or []:
-				if not isinstance(section, dict):
-					continue
-				content = section.get("contentZh") or section.get("content") or ""
-				kind = section.get("sectionType") or "text"
-				if kind == "text":
-					text = strip_tags(content)
-					if text:
-						sections.append({"type": "text", "text": text})
-				elif kind == "table":
-					text = strip_tags(content)
-					if text:
-						sections.append({"type": "table", "text": text})
-			if not sections:
-				continue
+			data = self._read()
+			summary = {"name": "OPtarkov", "syncedAt": data.get("syncedAt", ""), "count": len(data.get("byTask") or {})}
+			statistics = data.get("statistics") or {}
+			summary.update(statistics)
+			summary["lastSuccessfulAt"] = data.get("lastSuccessfulAt") or ("" if summary.get("failed") else summary["syncedAt"])
+			result = self.last_result or data.get("lastResult") or {}
+			if not result and summary["syncedAt"] and statistics:
+				ok = not statistics.get("failed")
+				progress = {key: statistics.get(key, 0) for key in ("discovered", "skipped", "fetched", "failed")}
+				processed = progress["fetched"] + progress["failed"]
+				progress.update(stage="done" if ok else "error", processed=processed, total=processed)
+				result = {"ok": ok, "finishedAt": summary["syncedAt"], "startedAt": "", "progress": progress,
+					"sources": {"optarkov": {"ok": ok, **statistics}}}
 			return {
-				"url": SOURCES["tarkovbox"]["detail"].format(slug=card["slug"]),
-				"title": guide.get("titleZh") or guide.get("title") or "",
-				"summary": strip_tags(guide.get("summaryZh") or guide.get("summary") or ""),
-				"updatedAt": guide.get("updatedAt") or "",
-				"sections": sections,
+				"sources": {"optarkov": summary}, "intervalSeconds": SYNC_INTERVAL, "syncing": self._syncing,
+				"progress": dict(self._progress or result.get("progress") or {}), "lastResult": result,
 			}
-		return None
-
-	# ---------- OPtarkov ----------
-
-	def _optarkov_guide(self, task_number: int) -> dict | None:
-		html = self._fetch(SOURCES["optarkov"]["detail"].format(id=task_number))
-		if not html:
-			return None
-		data = read_nuxt(html)
-		if not data:
-			return None
-		root = deref(data, 1)
-		if not isinstance(root, dict):
-			return None
-		inner = root.get("data") or {}
-		if isinstance(inner, list):
-			inner = inner[0] if inner else {}
-		if not isinstance(inner, dict):
-			return None
-
-		for ref in inner.values():
-			task = deref(data, ref)
-			if not isinstance(task, dict):
-				continue
-			english = task.get("name") or ""
-			localized = task.get("localizedName") or ""
-			if not english:
-				continue
-			sections = []
-			for tip in task.get("tips") or []:
-				if isinstance(tip, str) and tip.strip():
-					sections.append({"type": "tip", "text": tip.strip()})
-			for how in task.get("how_to") or []:
-				if isinstance(how, str) and how.strip():
-					sections.append({"type": "howto", "text": how.strip()})
-			for group in task.get("detail") or []:
-				if not isinstance(group, dict):
-					continue
-				title = group.get("title") or ""
-				images = [
-					{"url": f"https://www.optarkov.com/{path}", "local": path}
-					for path in (group.get("img") or [])
-					if isinstance(path, str)
-				]
-				if images:
-					sections.append({"type": "image", "title": title, "images": images})
-			if task.get("link"):
-				sections.append({"type": "video", "url": task["link"]})
-			if not sections:
-				continue
-			return {
-				"url": SOURCES["optarkov"]["detail"].format(id=task_number),
-				"title": localized,
-				"english": english,
-				"updatedAt": "",
-				"sections": sections,
-			}
-		return None
-
-	# ---------- 同步 ----------
 
 	def sync(self, force: bool = False) -> dict:
 		with self._lock:
 			if self._syncing:
-				return {"ok": False, "error": "正在同步"}
+				return {"ok": False, "error": "攻略正在同步"}
 			self._syncing = True
-
-		result = {"ok": True, "sources": {}}
+			started = now_text()
+			self._progress = {"stage": "sitemap", "startedAt": started, "total": 0, "processed": 0, "discovered": 0,
+				"skipped": 0, "fetched": 0, "failed": 0, "matchProcessed": 0, "matchTotal": 0}
+		cache = self._read()
+		result = {"ok": False, "sources": {}, "startedAt": started}
 		try:
-			result["sources"]["tarkovbox"] = self._sync_tarkovbox(force)
-			result["sources"]["optarkov"] = self._sync_optarkov(force)
+			payload = self._sync_pages(force, cache)
+			statistics = payload["statistics"]
+			result["ok"] = not statistics["failed"]
+			result["sources"]["optarkov"] = {"ok": result["ok"], **statistics}
+			if not result["ok"]:
+				result["error"] = "部分任务页获取失败，可再次同步以重试"
+			result["finishedAt"] = payload["syncedAt"]
+			result["progress"] = {**self._progress, "stage": "done" if result["ok"] else "error"}
+			if not result["ok"]:
+				result["progress"]["failedStage"] = "fetch"
+			self._write({**payload, "lastResult": result})
+		except Exception as error:
+			result.update(ok=False, error=str(error), finishedAt=now_text())
+			if "optarkov" in result["sources"]:
+				result["sources"]["optarkov"]["ok"] = False
+			result["progress"] = {**self._progress, "failedStage": self._progress["stage"], "stage": "error"}
+			try:
+				self._write({**cache, "lastResult": result})
+			except OSError as save_error:
+				result["error"] += f"；本次结果保存失败：{save_error}"
 		finally:
-			self._syncing = False
+			with self._lock:
+				self.last_result = result
+				self._progress = result.get("progress", {})
+				self._syncing = False
+		return result
 
-		self.last_result = {**result, "finishedAt": now_text()}
-		return self.last_result
+	def _sync_pages(self, force: bool, cache: dict) -> dict:
+		index = self._fetch(SITEMAP)
+		if index is None:
+			raise ValueError("OPtarkov 任务站点地图获取失败")
+		discovered = sitemap_tasks(index)
+		pages = {number: guide for number, guide in (cache.get("pages") or {}).items() if number in discovered}
+		retry = {str(page) for page in (cache.get("statistics") or {}).get("failedPages", [])}
+		now = time.time()
+		pending = []
+		for number, modified in discovered.items():
+			guide = pages.get(number) or {}
+			stale = modified != guide.get("lastmod") if modified else now - guide.get("checked", 0) >= SYNC_INTERVAL
+			if force or number in retry or not guide or stale:
+				pending.append(number)
+		failed = []
+		with self._lock:
+			self._progress.update(stage="fetch", total=len(pending), discovered=len(discovered), skipped=len(discovered) - len(pending))
+		with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+			futures = {pool.submit(self._read_page, number): number for number in pending}
+			for future in as_completed(futures):
+				number = futures[future]
+				try:
+					guide = future.result()
+					pages[number] = {**guide, "lastmod": discovered[number], "checked": now}
+				except (OSError, ValueError, TypeError, IndexError, KeyError):
+					failed.append(int(number))
+				with self._lock:
+					self._progress["processed"] += 1
+					self._progress["failed"] = len(failed)
+					self._progress["fetched"] = self._progress["processed"] - len(failed)
 
-	def _by_english(self) -> dict[str, str]:
-		mapping = {}
-		for task_id, task in self.data_store.tasks.items():
-			name = task.get("normalizedName")
-			if name:
-				mapping[name] = task_id
-		return mapping
-
-	def _sync_tarkovbox(self, force: bool) -> dict:
-		cards = self._tarkovbox_index()
-		previous = self._read("tarkovbox")
-		by_task = {} if force else dict(previous.get("byTask") or {})
-		by_english = self._by_english()
-
-		added = 0
-		for card in cards:
-			task_id = by_english.get(card["slug"]) or by_english.get(slugify(card["english"]))
-			if not task_id:
+		with self._lock:
+			self._progress.update(stage="match", matchTotal=len(pages))
+		english, variants, localized, wiki_titles = self._task_names()
+		by_task = {}
+		ranks = {}
+		unmatched = []
+		empty = 0
+		matched_pages = 0
+		for number in sorted(pages, key=int):
+			guide = pages[number]
+			with self._lock:
+				self._progress["matchProcessed"] += 1
+			if not guide["sections"]:
+				empty += 1
 				continue
-			if task_id in by_task:
-				continue
-			guide = self._tarkovbox_guide(card)
-			time.sleep(0.3)
-			if not guide:
-				continue
-			by_task[task_id] = guide
-			added += 1
-
-		payload = {"syncedAt": now_text(), "byTask": by_task}
-		self._write("tarkovbox", payload)
-		return {"ok": True, "total": len(by_task), "added": added}
-
-	def _sync_optarkov(self, force: bool) -> dict:
-		previous = self._read("optarkov")
-		by_task = {} if force else dict(previous.get("byTask") or {})
-		by_english = self._by_english()
-		known = set(by_task)
-
-		added = 0
-		empty_streak = 0
-		for number in range(1, 520):
-			if empty_streak >= 8:
-				break
-			guide = self._optarkov_guide(number)
-			time.sleep(0.3)
-			if not guide:
-				empty_streak += 1
-				continue
-			empty_streak = 0
-			task_id = by_english.get(slugify(guide.get("english")))
-			if not task_id or task_id in known:
-				continue
-			by_task[task_id] = guide
-			known.add(task_id)
-			added += 1
-
-		payload = {"syncedAt": now_text(), "byTask": by_task}
-		self._write("optarkov", payload)
-		return {"ok": True, "total": len(by_task), "added": added}
+			slug = slugify(guide["english"])
+			targets = english.get(slug) or variants.get(slug)
+			rank = 2 if slug in english else 1
+			if not targets:
+				names = localized.get(guide["title"], set())
+				targets = names if len(names) == 1 else set()
+				rank = 0
+			if not targets and slug:
+				wiki_ids = wiki_titles.get(slug, set())
+				targets = wiki_ids if len(wiki_ids) == 1 else set()
+				rank = -1
+			if targets:
+				matched_pages += 1
+				for task_id in targets:
+					if task_id not in ranks or rank > ranks[task_id]:
+						by_task[task_id] = number
+						ranks[task_id] = rank
+			else:
+				unmatched.append(int(number))
+		# 早期缓存把攻略直接放在任务索引里。源页刷新失败时继续提供原有内容。
+		failed_urls = {DETAIL + str(number) for number in failed}
+		for task_id, entry in (cache.get("byTask") or {}).items():
+			if isinstance(entry, dict) and (entry.get("url") or "").rstrip("/") in failed_urls:
+				by_task.setdefault(task_id, entry)
+		statistics = {
+			"discovered": len(discovered), "fetched": len(pending) - len(failed),
+			"skipped": len(discovered) - len(pending), "failed": len(failed), "failedPages": sorted(failed),
+			"total": len(by_task), "matched": len(by_task), "matchedPages": matched_pages, "unmatched": len(unmatched),
+			"unmatchedPages": unmatched, "empty": empty, "cached": len(pages),
+		}
+		stamp = now_text()
+		previous_success = cache.get("lastSuccessfulAt") or ("" if (cache.get("statistics") or {}).get("failed") else cache.get("syncedAt", ""))
+		with self._lock:
+			self._progress["stage"] = "save"
+		return {"syncedAt": stamp, "lastSuccessfulAt": previous_success if failed else stamp,
+			"byTask": by_task, "pages": pages, "statistics": statistics}
 
 	def image_path(self, remote: str) -> Path:
-		safe = re.sub(r"[^a-zA-Z0-9/_.-]", "_", remote)
-		return IMAGE_DIR / re.sub(r"[/]", "__", safe)
+		url = image_url(remote)
+		name = hashlib.sha256(url.encode()).hexdigest()
+		return self.image_dir / (name + Path(urlsplit(url).path).suffix.lower())
 
 	def fetch_image(self, remote: str) -> Path | None:
-		target = self.image_path(remote)
-		if target.exists():
-			return target
-		url = remote if remote.startswith("http") else f"https://www.optarkov.com/{remote}"
+		url = image_url(remote)
+		if not url:
+			return None
+		target = self.image_path(url)
 		with self._image_lock:
+			if target.is_file():
+				return target
 			try:
-				response = self._session.get(url, timeout=TIMEOUT)
-				if response.status_code != 200 or not response.content:
+				response = self._session().get(url, timeout=(6, 30))
+				response.raise_for_status()
+				if not response.headers.get("Content-Type", "").startswith("image/") or not response.content:
 					return None
 				target.parent.mkdir(parents=True, exist_ok=True)
-				target.write_bytes(response.content)
+				temp = target.with_suffix(".tmp")
+				temp.write_bytes(response.content)
+				temp.replace(target)
 				return target
-			except (requests.RequestException, OSError):
+			except (OSError, requests.RequestException):
 				return None
 
 	def start_scheduler(self) -> None:
-		"""保留接口但不再自动运行；同步统一由界面按钮触发。"""
 		return

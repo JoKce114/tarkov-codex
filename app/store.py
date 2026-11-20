@@ -215,7 +215,7 @@ class DataStore:
 				"counts": {
 					"items": len(self.items),
 					"tasks": len(self.tasks),
-					"maps": len(self.maps),
+					"maps": sum(row.get("normalizedName") != "ground-zero-tutorial" for row in self.maps.values()),
 					"traders": len(self.traders),
 					"hideout": len(self.hideout),
 					"barters": len(self.barters),

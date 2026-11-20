@@ -596,86 +596,75 @@ function renderMapBlock(group) {
 		controls.appendChild(button);
 	});
 
-	fetch(`/api/map/svg/${encodeURIComponent(group.mapKey)}`)
-		.then((response) => (response.ok ? response.text() : ""))
-		.then((svgText) => {
-			if (!svgText) {
-				canvas.appendChild(el("div", "map_hint", "地图图片加载失败"));
-				return;
-			}
-			const holder = document.createElement("div");
-			holder.innerHTML = svgText;
-			const svg = holder.querySelector("svg");
-			if (!svg) {
-				canvas.appendChild(el("div", "map_hint", "地图数据异常"));
-				return;
-			}
-			svg.setAttribute("width", String(group.width));
-			svg.setAttribute("height", String(group.height));
-			svg.style.width = `${group.width}px`;
-			svg.style.height = `${group.height}px`;
-
-			const overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
-			overlay.setAttribute("transform", `translate(${group.originX || 0} ${group.originY || 0})`);
-			group.points.forEach((point) => {
-				const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-				circle.setAttribute("cx", String(point.x));
-				circle.setAttribute("cy", String(point.y));
-				circle.setAttribute("r", "9");
-				circle.setAttribute("class", point.optional ? "map_dot is_optional" : "map_dot");
-				const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-				title.textContent = point.label;
-				circle.appendChild(title);
-				overlay.appendChild(circle);
-			});
-			svg.appendChild(overlay);
-			canvas.appendChild(svg);
-
-			state.ready = true;
-			fit();
-
-			let dragging = false;
-			let lastX = 0;
-			let lastY = 0;
-			viewport.addEventListener("pointerdown", (event) => {
-				dragging = true;
-				lastX = event.clientX;
-				lastY = event.clientY;
-				viewport.classList.add("is_dragging");
-				viewport.setPointerCapture(event.pointerId);
-			});
-			viewport.addEventListener("pointermove", (event) => {
-				if (!dragging) {
-					return;
-				}
-				state.x += event.clientX - lastX;
-				state.y += event.clientY - lastY;
-				lastX = event.clientX;
-				lastY = event.clientY;
-				apply();
-			});
-			const stopDrag = () => {
-				dragging = false;
-				viewport.classList.remove("is_dragging");
-			};
-			viewport.addEventListener("pointerup", stopDrag);
-			viewport.addEventListener("pointercancel", stopDrag);
-			viewport.addEventListener("wheel", (event) => {
-				event.preventDefault();
-				const box = viewport.getBoundingClientRect();
-				const mx = event.clientX - box.left;
-				const my = event.clientY - box.top;
-				const factor = event.deltaY < 0 ? 1.12 : 0.89;
-				const next = Math.min(8, Math.max(0.2, state.scale * factor));
-				state.x = mx - ((mx - state.x) / state.scale) * next;
-				state.y = my - ((my - state.y) / state.scale) * next;
-				state.scale = next;
-				apply();
-			}, { passive: false });
-		})
-		.catch(() => {
-			canvas.appendChild(el("div", "map_hint", "地图图片加载失败"));
+	const image = el("img", "task_map_image");
+	image.alt = group.mapName;
+	image.draggable = false;
+	image.style.width = `${group.width}px`;
+	image.style.height = `${group.height}px`;
+	image.addEventListener("load", () => {
+		const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		overlay.setAttribute("class", "task_map_overlay");
+		overlay.setAttribute("viewBox", `0 0 ${group.width} ${group.height}`);
+		group.points.forEach((point) => {
+			const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+			circle.setAttribute("cx", String(point.x));
+			circle.setAttribute("cy", String(point.y));
+			circle.setAttribute("r", "9");
+			circle.setAttribute("class", point.optional ? "map_dot is_optional" : "map_dot");
+			const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+			title.textContent = point.label;
+			circle.appendChild(title);
+			overlay.appendChild(circle);
 		});
+		canvas.appendChild(overlay);
+
+		state.ready = true;
+		fit();
+
+		let dragging = false;
+		let lastX = 0;
+		let lastY = 0;
+		viewport.addEventListener("pointerdown", (event) => {
+			dragging = true;
+			lastX = event.clientX;
+			lastY = event.clientY;
+			viewport.classList.add("is_dragging");
+			viewport.setPointerCapture(event.pointerId);
+		});
+		viewport.addEventListener("pointermove", (event) => {
+			if (!dragging) {
+				return;
+			}
+			state.x += event.clientX - lastX;
+			state.y += event.clientY - lastY;
+			lastX = event.clientX;
+			lastY = event.clientY;
+			apply();
+		});
+		const stopDrag = () => {
+			dragging = false;
+			viewport.classList.remove("is_dragging");
+		};
+		viewport.addEventListener("pointerup", stopDrag);
+		viewport.addEventListener("pointercancel", stopDrag);
+		viewport.addEventListener("wheel", (event) => {
+			event.preventDefault();
+			const box = viewport.getBoundingClientRect();
+			const mx = event.clientX - box.left;
+			const my = event.clientY - box.top;
+			const factor = event.deltaY < 0 ? 1.12 : 0.89;
+			const next = Math.min(8, Math.max(0.2, state.scale * factor));
+			state.x = mx - ((mx - state.x) / state.scale) * next;
+			state.y = my - ((my - state.y) / state.scale) * next;
+			state.scale = next;
+			apply();
+		}, { passive: false });
+	}, { once: true });
+	image.addEventListener("error", () => {
+		canvas.replaceChildren(el("div", "map_hint", "地图图片加载失败"));
+	}, { once: true });
+	canvas.appendChild(image);
+	image.src = `/api/map/svg/${encodeURIComponent(group.mapKey)}`;
 
 	block.appendChild(head);
 	block.appendChild(viewport);
@@ -1140,7 +1129,7 @@ async function openMapInSystem(entry, imageUrl) {
 		if (payload.ok) {
 			toast(`已在系统看图工具中打开「${entry.name || ""}」`);
 		} else {
-			toast(`打开失败：${payload.error || "未知错误"}`, true);
+			openMapViewer(quickMapThumb(entry) || imageUrl, `${entry.name || "地图"}（预览图）`);
 		}
 	} catch (error) {
 		toast(`打开失败：${error.message}`, true);
@@ -1762,12 +1751,22 @@ function viewerZoom(factor, centerX, centerY) {
 	viewerApply();
 }
 
-function openMapViewer(url, title) {
+function openMapViewer(url, title, previewUrl = "") {
 	viewer.sourceUrl = url;
-	document.getElementById("viewer_title").textContent = title || "地图";
+	const heading = document.getElementById("viewer_title");
+	heading.textContent = title || "地图";
 	const image = document.getElementById("viewer_image");
 	const container = document.getElementById("map_viewer");
-	image.onload = () => viewerFit();
+	image.onload = viewerFit;
+	image.onerror = () => {
+		if (previewUrl && viewer.sourceUrl !== previewUrl) {
+			viewer.sourceUrl = previewUrl;
+			heading.textContent = (title || "地图") + "（预览图）";
+			image.src = mapImageUrl(previewUrl);
+			return;
+		}
+		heading.textContent = (title || "地图") + "（图片加载失败）";
+	};
 	container.hidden = false;
 	image.src = mapImageUrl(url);
 	if (image.complete) {
@@ -1800,7 +1799,7 @@ function setupMapViewer() {
 			const payload = await fetch("/api/open-file", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ url: state.currentMapOriginal || viewer.sourceUrl }),
+				body: JSON.stringify({ url: viewer.sourceUrl }),
 			}).then((response) => response.json());
 			button.textContent = payload.ok ? "已打开" : `失败：${payload.error || "未知"}`;
 		} catch (error) {
@@ -2623,7 +2622,7 @@ async function init() {
 
 	document.getElementById("map_image").addEventListener("click", () => {
 		if (state.currentMapImage) {
-			openMapViewer(state.currentMapOriginal || state.currentMapImage, state.currentMapTitle || "地图");
+			openMapViewer(state.currentMapOriginal || state.currentMapImage, state.currentMapTitle || "地图", state.currentMapImage);
 		}
 	});
 	setupMapViewer();

@@ -38,7 +38,7 @@ def wizard(exe: Path, arguments: str, env: dict) -> None:
 		raise RuntimeError(f"安装向导退出码 {result.returncode}")
 
 
-def smoke(installer: Path) -> None:
+def smoke(installer: Path, previous: Path | None = None) -> None:
 	if registry_value(REGISTRY, "InstallDir") or registry_value(UNINSTALL, "DisplayName"):
 		raise RuntimeError("当前 Windows 用户已有安装记录，请在干净的测试用户中验证。")
 	shortcut = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/塔科夫百科.lnk"
@@ -62,9 +62,15 @@ def smoke(installer: Path) -> None:
 		legacy.mkdir(parents=True)
 		(legacy / "progress.json").write_text(json.dumps(test_data), encoding="utf-8")
 		try:
-			wizard(installer, f"/D={custom}", env)
+			wizard(previous or installer, f"/D={custom}", env)
 			assert exe.is_file() and uninstall.is_file()
 			assert Path(registry_value(REGISTRY, "InstallDir")) == custom
+			if previous:
+				assert registry_value(UNINSTALL, "DisplayVersion") == "0.3.0"
+				user_data.mkdir(parents=True, exist_ok=True)
+				settings = {"mode": "pve", "update": {"proxy": ""}}
+				(user_data / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+				(user_data / "progress.json").write_text(json.dumps(test_data), encoding="utf-8")
 			wizard(installer, "", env)
 			assert Path(registry_value(REGISTRY, "InstallDir")) == custom
 			assert registry_value(UNINSTALL, "DisplayVersion") == APP_VERSION
@@ -89,7 +95,21 @@ def smoke(installer: Path) -> None:
 					time.sleep(0.2)
 				else:
 					raise RuntimeError("安装后无法访问本地健康检查")
+				with requests.Session() as client:
+					spec = client.get(address + "/api/tasks/657315ddab5a49b71f098853/map", timeout=10).json()
+					group = next(group for group in spec["maps"] if group["mapKey"] == "ground-zero")
+					assert group["width"] > 0 and len(group["points"]) >= 1
+					base = client.get(address + "/api/map/svg/ground-zero", timeout=5)
+					assert base.ok and "svg" in base.headers["content-type"]
+					detail = client.get(address + "/api/game-maps/customs", timeout=5).json()["map"]
+					assert detail["images"][0]["title"] == "海关汉化地图"
+					preview = client.get(address + "/api/game-map/image", params={"url": detail["previewUrl"]}, timeout=5)
+					assert preview.ok and preview.content.startswith(b"\xff\xd8\xff")
+					interactive = client.get(address + "/api/atlas/ground-zero", timeout=10).json()
+					assert interactive["ok"] and any(point.get("taskId") == "657315ddab5a49b71f098853" for point in interactive["points"])
 				assert json.loads((user_data / "progress.json").read_text()) == test_data
+				if previous:
+					assert json.loads((user_data / "settings.json").read_text()) == settings
 			finally:
 				process.terminate()
 				process.wait(timeout=15)
@@ -104,4 +124,4 @@ def smoke(installer: Path) -> None:
 
 
 if __name__ == "__main__":
-	smoke(Path(sys.argv[1]).resolve())
+	smoke(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None)

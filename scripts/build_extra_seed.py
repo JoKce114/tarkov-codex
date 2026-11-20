@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.datasets import MODE_ORDER
+from app.map_atlas import ATLAS
+from app.mapconfig import MapConfig
 SOURCE = ROOT / "data"
 TARGET = ROOT / "app" / "seed"
 
@@ -44,10 +46,18 @@ def main() -> None:
 	target_dir.mkdir(parents=True, exist_ok=True)
 	count = 0
 	if preview_dir.is_dir():
-		for image in preview_dir.glob("*_thumb.jpg"):
+		previews = {image["previewUrl"].rsplit("/", 1)[1] for variants in ATLAS.values() for image in variants}
+		for image in preview_dir.iterdir():
+			if not image.is_file() or not (image.name.endswith("_thumb.jpg") or image.name in previews):
+				continue
 			shutil.copy2(image, target_dir / image.name)
 			count += 1
 	copied.append(f"maps/images ({count} 张)")
+
+	# 已缓存的任务底图随包提供，旧安装缺少这些文件时可在升级后补齐。
+	for record in MapConfig().entries():
+		if record.get("svg"):
+			copy_file(f"cache/map-{record['key']}.svg")
 
 	# 攻略
 	if copy_file("guides/optarkov.json"):

@@ -13,7 +13,7 @@ from .datasets import DEFAULT_MODE, MODE_ORDER, is_valid_mode
 
 APP_NAME = "塔科夫百科"
 APP_ID = "tarkov-codex"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 FROZEN = bool(getattr(sys, "frozen", False))
 PACKAGE_DIR = Path(__file__).resolve().parent

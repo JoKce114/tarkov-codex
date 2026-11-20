@@ -18,6 +18,7 @@ from .assets import ASSET_HEADERS
 from .bosses import is_boss_role
 from .datasets import API_BASE, is_valid_mode
 from .mapconfig import MapConfig, _load
+from .map_atlas import ATLAS, ASSET_BASE
 from .store import DataStore
 
 SYNC_INTERVAL = 7 * 24 * 60 * 60
@@ -195,6 +196,7 @@ class MapStore:
 		self.image_urls = {
 			image[field] for variants in self.catalog.values() for image in variants for field in ("originalUrl", "previewUrl")
 		}
+		self.image_urls.update(image[field] for images in ATLAS.values() for image in images for field in ("url", "originalUrl"))
 		self.config = MapConfig()
 
 	def _read(self, mode: str) -> dict:
@@ -205,14 +207,22 @@ class MapStore:
 			return {}
 
 	def maps(self) -> list[dict]:
-		return self._read(self.store.mode).get("maps") or []
+		rows = [row for row in self._read(self.store.mode).get("maps") or [] if row.get("slug") != "ground-zero-tutorial"]
+		for row in rows:
+			slug = row.get("slug") or ""
+			record = self.config.entry_by_normalized(slug) or {}
+			localized = ATLAS.get(record.get("normalized") or slug, ())
+			if localized:
+				row["images"] = [*localized, *(row.get("images") or [])]
+				row["previewUrl"] = localized[0]["previewUrl"]
+		return rows
 
 	def status(self) -> dict:
 		mode = self.store.mode
 		data = self._read(mode)
 		with self._lock:
 			return {
-				"mode": mode, "syncedAt": data.get("syncedAt") or "", "count": len(data.get("maps") or []),
+				"mode": mode, "syncedAt": data.get("syncedAt") or "", "count": sum(row.get("slug") != "ground-zero-tutorial" for row in data.get("maps") or []),
 				"intervalSeconds": SYNC_INTERVAL, "syncing": self._syncing, "lastResult": self.last_result,
 			}
 
@@ -266,9 +276,17 @@ class MapStore:
 			if target.is_file():
 				return target
 			try:
-				response = self._session.get(url, headers={"Accept": "image/jpeg"}, timeout=(8, 90))
+				headers = {"Accept": "image/webp" if target.suffix == ".webp" else "image/jpeg"}
+				if url.startswith(ASSET_BASE):
+					headers["Referer"] = "https://www.tarkovbox.com/"
+				response = self._session.get(url, headers=headers, timeout=(8, 90))
 				response.raise_for_status()
-				if not response.content.startswith(b"\xff\xd8\xff"):
+				content = response.content
+				if target.suffix == ".webp":
+					valid = content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+				else:
+					valid = content.startswith(b"\xff\xd8\xff")
+				if not valid:
 					return None
 				target.parent.mkdir(parents=True, exist_ok=True)
 				temp = target.with_suffix(".tmp")

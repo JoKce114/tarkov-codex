@@ -1295,6 +1295,18 @@ body {
 	display: block;
 }
 
+.task_map_image {
+	display: block;
+	max-width: none;
+}
+
+.task_map_overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
 .map_dot {
 	fill: #e8413a;
 	stroke: #fff;

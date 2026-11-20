@@ -131,7 +131,9 @@ class MapSourceTests(unittest.TestCase):
 			self.assertEqual((entry["name"], entry["exits"][0]["name"]), ("灯塔", "南方公路"))
 			self.assertEqual((entry["bosses"][0]["name"], entry["bosses"][0]["chance"]), ("游荡者", 35))
 			self.assertEqual((entry["keys"][0]["name"], entry["keys"][0]["lockCount"]), ("仓库钥匙", 2))
-			image = entry["images"][0]
+			self.assertEqual(entry["images"][0]["title"], "灯塔汉化地图")
+			self.assertEqual(entry["previewUrl"], entry["images"][0]["url"])
+			image = next(image for image in entry["images"] if image["title"] == "2D")
 			self.assertEqual(image["originalUrl"], "https://tarkov.dev/maps/lighthouse-2d.jpg")
 			self.assertEqual(image["previewUrl"], "https://tarkov.dev/maps/lighthouse-2d_thumb.jpg")
 			self.assertIsNone(maps.fetch_image("https://example.com/map.jpg"))

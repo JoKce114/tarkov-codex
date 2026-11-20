@@ -16,12 +16,8 @@ import uvicorn
 
 from . import paths
 from .api import create_app
-from .cdk import CdkStore
-from .guides import GuideStore
-from .maps import MapStore
 from .progress import ProgressStore
-from .store import DataStore
-from .sync import SyncManager, seed_if_missing
+from .sync import SyncManager
 
 
 def pick_free_port() -> int:
@@ -60,14 +56,10 @@ def wait_until_ready(port: int, timeout: float = 20.0) -> bool:
 
 
 def start_server(
-	store: DataStore,
 	sync_manager: SyncManager,
-	progress,
-	cdk: CdkStore,
-	guides: GuideStore,
-	map_store: MapStore,
+	progress: ProgressStore,
 ) -> uvicorn.Server:
-	app = create_app(store, sync_manager, progress, cdk, guides, map_store)
+	app = create_app(sync_manager, progress)
 	port = pick_free_port()
 	config = uvicorn.Config(
 		app,
@@ -88,17 +80,9 @@ def run() -> None:
 		return
 
 	paths.ensure_dirs()
-	seed_if_missing(paths.DATA_DIR, paths.SEED_DIR)
-
-	store = DataStore(paths.DATA_DIR, paths.load_mode())
-	store.load()
-
-	sync_manager = SyncManager(paths.DATA_DIR)
+	sync_manager = SyncManager(paths.DATA_DIR, paths.load_mode(), paths.SEED_DIR)
 	progress = ProgressStore(paths.DATA_DIR / "progress.json")
-	cdk = CdkStore()
-	guides = GuideStore(store)
-	map_store = MapStore()
-	server = start_server(store, sync_manager, progress, cdk, guides, map_store)
+	server = start_server(sync_manager, progress)
 	url = f"http://127.0.0.1:{server.config.port}"
 	# 全部改为手动同步：启动时不联网，避免游玩时占用资源
 

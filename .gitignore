@@ -6,9 +6,10 @@ dist_new/
 build/work/
 build/*.spec
 build/runner.py
+build/version_info.txt
+release/
 
-# 出厂数据：含第三方地图、攻略、游戏素材，不进仓库
-# 程序首次运行会自动同步
+# 出厂数据：由 Tarkov.dev 生成，不进仓库
 app/seed/
 
 # Python

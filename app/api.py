@@ -3,53 +3,45 @@ from __future__ import annotations
 import os
 import threading
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from anyio import CapacityLimiter, to_thread
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import paths
 from .assets import IconCache, SvgCache
-from .cdk import CdkStore
 from .datasets import DEFAULT_MODE, GAME_MODES, MODE_ORDER, is_valid_mode
-from .guides import GuideStore
-from .mapconfig import MapConfig, read_viewbox
-from .maps import MapStore
+from .mapconfig import MapConfig
+from .maps import build_map_detail, build_map_summary
 from .progress import ProgressStore
 from .store import DataStore
 from .sync import SyncManager
+from .updater import Updater
 
 
-def build_task_map(task: dict, store: DataStore, map_config: MapConfig, svg_cache: SvgCache) -> dict:
-	"""把任务目标里的区域坐标换算成地图矢量图坐标。"""
+def build_task_map(task: dict, store: DataStore, map_config: MapConfig) -> dict:
+	"""返回归一化点位，不读取底图。"""
 	groups: dict[str, dict] = {}
 	for objective in task.get("objectives") or []:
 		description = objective.get("description") or ""
-		for zone in objective.get("zones") or []:
+		locations = list(objective.get("zones") or [])
+		for group in objective.get("possibleLocations") or []:
+			locations.extend({"map": group.get("map"), "position": point} for point in group.get("positions") or [])
+		for zone in locations:
 			position = zone.get("position") or {}
 			if "x" not in position or "z" not in position:
 				continue
 			map_entry = store.maps.get(zone.get("map") or "") or {}
 			normalized = map_entry.get("normalizedName") or ""
 			record = map_config.entry_by_normalized(normalized)
-			if record is None:
+			if record is None or not record.get("svg"):
 				continue
-
-			svg_text = svg_cache.get(record["key"], record.get("svg") or "")
-			viewbox = read_viewbox(svg_text) if svg_text else None
-			if not viewbox:
-				continue
-			map_config.set_viewbox(record["key"], viewbox[0], viewbox[1])
-
-			point = map_config.to_svg(record["key"], position["x"], position["z"])
+			point = map_config.to_normalized(record["key"], position["x"], position["z"])
 			if point is None:
 				continue
 
 			# 少量数据源坐标本身有误（如 Ground Zero 的 UN Roadblock），落在图外就不画
-			margin_x = viewbox[0] * 0.02
-			margin_y = viewbox[1] * 0.02
-			if not (-margin_x <= point[0] <= viewbox[0] + margin_x):
-				continue
-			if not (-margin_y <= point[1] <= viewbox[1] + margin_y):
+			if not all(-0.02 <= coordinate <= 1.02 for coordinate in point):
 				continue
 
 			group = groups.setdefault(
@@ -57,48 +49,52 @@ def build_task_map(task: dict, store: DataStore, map_config: MapConfig, svg_cach
 				{
 					"mapKey": record["normalized"],
 					"mapName": map_entry.get("name") or "",
-					"width": viewbox[0],
-					"height": viewbox[1],
-					"hasSvg": True,
 					"points": [],
 				},
 			)
 			if normalized == record["normalized"]:
 				group["mapName"] = map_entry.get("name") or group["mapName"]
-			size = zone.get("size") or {}
 			group["points"].append(
 				{
-					"x": round(point[0], 1),
-					"y": round(point[1], 1),
+					"x": point[0],
+					"y": point[1],
 					"label": description,
 					"type": objective.get("type") or "",
 					"optional": bool(objective.get("optional")),
-					"radiusX": round(float(size.get("x") or 0) * 0.5, 1),
-					"radiusZ": round(float(size.get("z") or 0) * 0.5, 1),
 				}
 			)
 	return {"maps": list(groups.values())}
 
 
 def create_app(
-	store: DataStore,
 	sync_manager: SyncManager,
 	progress: ProgressStore,
-	cdk: CdkStore,
-	guides: GuideStore,
-	map_store: MapStore,
+	*,
+	auto_update: bool = True,
 ) -> FastAPI:
 	app = FastAPI(title=paths.APP_NAME, docs_url=None, redoc_url=None)
 	icons = IconCache(paths.ICON_DIR)
 	map_config = MapConfig()
 	svg_cache = SvgCache(paths.CACHE_DIR)
+	updater = Updater(paths.DATA_DIR)
+	map_assets = {url: key for key, url in map_config.svg_jobs()}
+	media_workers = None
+
+	async def load_media(loader, *args):
+		nonlocal media_workers
+		if media_workers is None:
+			media_workers = CapacityLimiter(6)
+		return await to_thread.run_sync(loader, *args, limiter=media_workers)
+
+	async def current_store() -> DataStore:
+		return sync_manager.current
 
 	@app.get("/api/health")
 	def health() -> dict:
 		return {"ok": True, "app": paths.APP_NAME, "version": paths.APP_VERSION}
 
 	@app.get("/api/modes")
-	def modes() -> dict:
+	def modes(store: DataStore = Depends(current_store)) -> dict:
 		return {
 			"ok": True,
 			"current": store.mode,
@@ -111,29 +107,51 @@ def create_app(
 		mode = (payload or {}).get("mode")
 		if not isinstance(mode, str) or not is_valid_mode(mode):
 			return JSONResponse({"ok": False, "error": "无效的游戏模式"}, status_code=400)
-		stats = store.set_mode(mode)
+		stats = sync_manager.set_mode(mode).stats()
 		paths.save_mode(mode)
 		return {"ok": True, **stats}
 
 	@app.get("/api/stats")
-	def stats() -> dict:
+	def stats(store: DataStore = Depends(current_store)) -> dict:
 		return {"ok": True, **store.stats()}
 
 	@app.get("/api/sync/status")
 	def sync_status() -> dict:
-		return {"ok": True, **sync_manager.status(store.mode)}
+		return {"ok": True, **sync_manager.status()}
+
+	@app.get("/api/update/status")
+	def update_status() -> dict:
+		return {"ok": True, **updater.status()}
+
+	@app.post("/api/update/check")
+	def update_check() -> dict:
+		return updater.check_async(manual=True)
+
+	@app.post("/api/update/auto")
+	def update_auto(payload: dict):
+		enabled = bool((payload or {}).get("enabled"))
+		updater.save_settings({"autoCheck": enabled})
+		return {"ok": True, "autoCheck": enabled}
+
+	@app.post("/api/update/proxy")
+	def update_proxy(payload: dict):
+		return updater.set_proxy(str((payload or {}).get("proxy") or ""))
+
+	@app.post("/api/update/download")
+	def update_download() -> dict:
+		return updater.start_download()
+
+	@app.post("/api/update/install")
+	def update_install() -> dict:
+		return updater.install()
 
 	@app.post("/api/sync/now")
 	def sync_now():
 		started = sync_manager.start_background()
 		return {"ok": started, "running": True, "message": "已开始同步" if started else "正在同步中"}
 
-	@app.post("/api/data/reload")
-	def data_reload() -> dict:
-		return {"ok": True, **store.load()}
-
 	@app.get("/api/categories")
-	def categories() -> dict:
+	def categories(store: DataStore = Depends(current_store)) -> dict:
 		return {"ok": True, "tree": store.category_tree()}
 
 	@app.get("/api/items")
@@ -143,24 +161,25 @@ def create_app(
 		sort: str = "name",
 		limit: int = 60,
 		offset: int = 0,
+		store: DataStore = Depends(current_store),
 	) -> dict:
 		limit = max(1, min(limit, 200))
 		offset = max(0, offset)
 		return {"ok": True, **store.search_items(q, limit, offset, category, sort)}
 
 	@app.get("/api/items/{item_id}")
-	def item_detail(item_id: str):
+	def item_detail(item_id: str, store: DataStore = Depends(current_store)):
 		detail = store.item_detail(item_id)
 		if detail is None:
 			return JSONResponse({"ok": False, "error": "找不到该物品"}, status_code=404)
 		return {"ok": True, "item": detail}
 
 	@app.get("/api/progress")
-	def progress_state() -> dict:
+	def progress_state(store: DataStore = Depends(current_store)) -> dict:
 		return {"ok": True, **progress.snapshot(store.mode)}
 
 	@app.post("/api/progress/task")
-	def progress_task(payload: dict):
+	def progress_task(payload: dict, store: DataStore = Depends(current_store)):
 		data = payload if isinstance(payload, dict) else {}
 		task_id = data.get("taskId")
 		if not isinstance(task_id, str) or not task_id:
@@ -171,7 +190,7 @@ def create_app(
 		return {"ok": True, **progress.set_task(store.mode, task_id, completed)}
 
 	@app.post("/api/progress/level")
-	def progress_level(payload: dict):
+	def progress_level(payload: dict, store: DataStore = Depends(current_store)):
 		data = payload if isinstance(payload, dict) else {}
 		level = data.get("level")
 		if not isinstance(level, int):
@@ -179,11 +198,11 @@ def create_app(
 		return {"ok": True, **progress.set_level(store.mode, level)}
 
 	@app.post("/api/progress/reset")
-	def progress_reset():
+	def progress_reset(store: DataStore = Depends(current_store)):
 		return {"ok": True, **progress.reset(store.mode)}
 
 	@app.get("/api/traders")
-	def traders() -> dict:
+	def traders(store: DataStore = Depends(current_store)) -> dict:
 		snapshot = progress.snapshot(store.mode)
 		return {
 			"ok": True,
@@ -191,25 +210,25 @@ def create_app(
 		}
 
 	@app.get("/api/traders/{trader_id}")
-	def trader_detail(trader_id: str):
+	def trader_detail(trader_id: str, store: DataStore = Depends(current_store)):
 		detail = store.trader_detail(trader_id)
 		if detail is None:
 			return JSONResponse({"ok": False, "error": "找不到该商人"}, status_code=404)
 		return {"ok": True, "trader": detail}
 
 	@app.get("/api/barters")
-	def barters(q: str = "", trader: str = "", limit: int = 60, offset: int = 0) -> dict:
+	def barters(q: str = "", trader: str = "", limit: int = 60, offset: int = 0, store: DataStore = Depends(current_store)) -> dict:
 		return {
 			"ok": True,
 			**store.barter_list(q, trader, max(1, min(limit, 200)), max(0, offset)),
 		}
 
 	@app.get("/api/hideout")
-	def hideout() -> dict:
+	def hideout(store: DataStore = Depends(current_store)) -> dict:
 		return {"ok": True, "stations": store.hideout_list()}
 
 	@app.get("/api/crafts")
-	def crafts(q: str = "", station: str = "", limit: int = 60, offset: int = 0) -> dict:
+	def crafts(q: str = "", station: str = "", limit: int = 60, offset: int = 0, store: DataStore = Depends(current_store)) -> dict:
 		return {
 			"ok": True,
 			**store.craft_list(q, station, max(1, min(limit, 200)), max(0, offset)),
@@ -225,6 +244,7 @@ def create_app(
 		lightkeeper: bool = False,
 		limit: int = 80,
 		offset: int = 0,
+		store: DataStore = Depends(current_store),
 	) -> dict:
 		snapshot = progress.snapshot(store.mode)
 		return {
@@ -246,7 +266,7 @@ def create_app(
 		}
 
 	@app.get("/api/tasks/{task_id}")
-	def task_detail(task_id: str):
+	def task_detail(task_id: str, store: DataStore = Depends(current_store)):
 		snapshot = progress.snapshot(store.mode)
 		detail = store.task_detail(task_id, set(snapshot["completed"]), snapshot["playerLevel"])
 		if detail is None:
@@ -254,102 +274,39 @@ def create_app(
 		return {"ok": True, "task": detail}
 
 	@app.get("/api/tasks/{task_id}/map")
-	def task_map(task_id: str):
+	def task_map(task_id: str, store: DataStore = Depends(current_store)):
 		task = store.tasks.get(task_id)
 		if task is None:
 			return JSONResponse({"ok": False, "error": "找不到该任务"}, status_code=404)
-		return {"ok": True, **build_task_map(task, store, map_config, svg_cache)}
-
-	@app.get("/api/tasks/{task_id}/guides")
-	def task_guides(task_id: str):
-		if task_id not in store.tasks:
-			return JSONResponse({"ok": False, "error": "找不到该任务"}, status_code=404)
-		return {"ok": True, "guides": guides.get(task_id)}
-
-	@app.get("/api/guide/image")
-	def guide_image(path: str):
-		local = guides.fetch_image(path)
-		if local is None:
-			return Response(status_code=404)
-		suffix = local.suffix.lower()
-		media = {"webp": "image/webp", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(
-			suffix.lstrip("."), "image/webp"
-		)
-		return Response(content=local.read_bytes(), media_type=media, headers={"Cache-Control": "public, max-age=604800"})
-
-	@app.get("/api/guides/status")
-	def guides_status() -> dict:
-		return {"ok": True, **guides.status()}
-
-	@app.post("/api/guides/sync")
-	def guides_sync():
-		if guides._syncing:
-			return {"ok": False, "error": "正在同步"}
-		threading.Thread(target=guides.sync, daemon=True).start()
-		return {"ok": True, "message": "已开始同步"}
-
-	@app.get("/api/cdk")
-	def cdk_list() -> dict:
-		return {"ok": True, "items": cdk.items(), "status": cdk.status()}
-
-	@app.post("/api/cdk/sync")
-	def cdk_sync():
-		return {"ok": True, **cdk.sync()}
+		return {"ok": True, **build_task_map(task, store, map_config)}
 
 	@app.get("/api/game-maps")
-	def game_maps() -> dict:
-		maps = map_store.maps()
-		summary = [
-			{
-				"slug": entry.get("slug"),
-				"name": entry.get("name"),
-				"nameEn": entry.get("nameEn"),
-				"players": entry.get("players"),
-				"raidDuration": entry.get("raidDuration"),
-				"previewUrl": entry.get("previewUrl"),
-				"exitCount": entry.get("exitCount"),
-				"bossCount": entry.get("bossCount"),
-				"keyCount": entry.get("keyCount"),
-			}
-			for entry in maps
-		]
-		return {"ok": True, "maps": summary, "status": map_store.status()}
+	def game_maps(store: DataStore = Depends(current_store)) -> dict:
+		return {"ok": True, "maps": [build_map_summary(store, map_id, map_config) for map_id in store.maps]}
 
 	@app.get("/api/game-maps/{slug}")
-	def game_map_detail(slug: str):
-		for entry in map_store.maps():
-			if entry.get("slug") == slug:
-				return {"ok": True, "map": entry}
+	def game_map_detail(slug: str, store: DataStore = Depends(current_store)):
+		map_id = store.map_ids_by_slug.get(slug, slug)
+		if map_id in store.maps:
+			return {"ok": True, "map": build_map_detail(store, map_id, map_config)}
 		return JSONResponse({"ok": False, "error": "找不到该地图"}, status_code=404)
 
 	@app.get("/api/game-map/image")
-	def game_map_image(url: str):
-		local = map_store.fetch_image(url)
-		if local is None:
+	async def game_map_image(url: str):
+		key = map_assets.get(url)
+		text = await load_media(svg_cache.get, key, url) if key else None
+		if not text:
 			return Response(status_code=404)
-		suffix = local.suffix.lower()
-		media = {
-			".jpg": "image/jpeg",
-			".jpeg": "image/jpeg",
-			".png": "image/png",
-			".webp": "image/webp",
-		}.get(suffix, "image/jpeg")
-		return Response(content=local.read_bytes(), media_type=media, headers={"Cache-Control": "public, max-age=604800"})
-
-	@app.post("/api/game-maps/sync")
-	def game_maps_sync():
-		if map_store._syncing:
-			return {"ok": False, "error": "正在同步"}
-		threading.Thread(target=map_store.sync, daemon=True).start()
-		return {"ok": True, "message": "已开始同步"}
+		return Response(content=text, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
 
 	@app.post("/api/open-file")
-	def open_file(payload: dict):
+	async def open_file(payload: dict):
 		"""把地图图片在系统看图工具里打开，可以全屏、缩放、翻看。"""
 		url = (payload or {}).get("url")
 		if not isinstance(url, str) or not url:
 			return JSONResponse({"ok": False, "error": "缺少图片地址"}, status_code=400)
-		local = map_store.fetch_image(url)
+		key = map_assets.get(url)
+		local = await load_media(svg_cache.cache.fetch_path, svg_cache.local_path(key), url) if key else None
 		if local is None:
 			return JSONResponse({"ok": False, "error": "图片还没下载好，请稍后重试"}, status_code=404)
 		try:
@@ -359,17 +316,17 @@ def create_app(
 		return {"ok": True, "path": str(local)}
 
 	@app.get("/api/map/svg/{map_key}")
-	def map_svg(map_key: str):
+	async def map_svg(map_key: str):
 		record = map_config.entry_by_normalized(map_key)
 		if record is None:
 			return Response(status_code=404)
-		text = svg_cache.get(record["key"], record.get("svg") or "")
+		text = await load_media(svg_cache.get, record["key"], record.get("svg") or "")
 		if not text:
 			return Response(status_code=404)
 		return Response(content=text, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
 
 	@app.get("/api/icon/{item_id}")
-	def icon(item_id: str, size: str = "icon"):
+	async def icon(item_id: str, size: str = "icon", store: DataStore = Depends(current_store)):
 		item = store.items.get(item_id)
 		if not item:
 			return Response(status_code=404)
@@ -380,14 +337,14 @@ def create_app(
 		}.get(size, "iconLink")
 		remote = item.get(field) or item.get("iconLink") or ""
 		cache_key = item_id if size == "icon" else f"{item_id}-{size}"
-		result = icons.get(cache_key, remote)
+		result = await load_media(icons.get, cache_key, remote)
 		if result is None:
 			return Response(status_code=404)
 		payload, content_type = result
 		return Response(content=payload, media_type=content_type, headers={"Cache-Control": "public, max-age=604800"})
 
 	@app.get("/api/asset/{kind}/{asset_id}")
-	def asset(kind: str, asset_id: str):
+	async def asset(kind: str, asset_id: str, store: DataStore = Depends(current_store)):
 		if kind == "trader":
 			source = store.traders.get(asset_id) or {}
 			remote = source.get("imageLink") or ""
@@ -401,7 +358,7 @@ def create_app(
 			return Response(status_code=404)
 		if not remote:
 			return Response(status_code=404)
-		result = icons.get(f"{kind}-{asset_id}", remote)
+		result = await load_media(icons.get, f"{kind}-{asset_id}", remote)
 		if result is None:
 			return Response(status_code=404)
 		payload, content_type = result
@@ -421,5 +378,23 @@ def create_app(
 			pass
 		return JSONResponse({"ok": False, "error": str(error)}, status_code=500)
 
+	@app.get("/", response_class=HTMLResponse)
+	def index() -> str:
+		"""首页由服务端渲染，把版本号填进静态资源地址。
+
+		这样升级后浏览器不会继续用缓存里的旧 app.js / style.css。
+		"""
+		try:
+			page = (paths.WEB_DIR / "index.html").read_text(encoding="utf-8")
+		except OSError:
+			return ""
+		return page.replace("__VERSION__", paths.APP_VERSION)
+
 	app.mount("/", StaticFiles(directory=paths.WEB_DIR, html=True), name="web")
+
+	# 启动后异步查一次；24 小时内或没开自动检查都不会发请求
+	if auto_update:
+		timer = threading.Timer(5.0, updater.auto_check)
+		timer.daemon = True
+		timer.start()
 	return app

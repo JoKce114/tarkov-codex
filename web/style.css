@@ -149,17 +149,29 @@ body {
 	outline: none;
 }
 
-.actions {
-	display: flex;
-	align-items: center;
-	gap: 14px;
-	margin-left: auto;
-	flex-shrink: 0;
-}
-
 .sync_state {
 	color: var(--ColorTextDim);
 	font-size: 12px;
+	margin-top: 12px;
+}
+
+/* 顶部细进度条：只在同步时出现，不占空间也不挡操作 */
+.sync_progress {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 3px;
+	background: rgba(255, 255, 255, 0.08);
+	z-index: 900;
+	pointer-events: none;
+}
+
+.sync_progress_bar {
+	height: 100%;
+	width: 0%;
+	background: var(--ColorGold);
+	transition: width 0.3s ease;
 }
 
 .sync_state.is_running {
@@ -1281,6 +1293,18 @@ body {
 
 .map_canvas svg {
 	display: block;
+}
+
+.task_map_image {
+	display: block;
+	max-width: none;
+}
+
+.task_map_overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
 }
 
 .map_dot {
@@ -2451,4 +2475,208 @@ body {
 	color: var(--ColorTextDim);
 	line-height: 1.8;
 	margin-bottom: 14px;
+}
+
+/* 图片还没下载好或下载失败时，先留出位置，不显示破图标 */
+img.img_failed {
+	visibility: hidden;
+}
+
+/* ---------- 设置：自动更新 ---------- */
+
+.top_icon_btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	margin-left: 10px;
+	background: transparent;
+	border: 1px solid var(--ColorBorder);
+	border-radius: 4px;
+	color: var(--ColorTextDim);
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.top_icon_btn:hover {
+	color: var(--ColorText);
+	border-color: var(--ColorAccent);
+}
+
+.home_version {
+	margin-top: 18px;
+	text-align: center;
+	font-size: 11px;
+	color: var(--ColorTextDim);
+	opacity: 0.7;
+}
+
+.settings_panel {
+	max-width: 720px;
+	margin: 0 auto;
+	padding: 24px 0 60px;
+}
+
+.settings_section {
+	background: var(--ColorPanel);
+	border: 1px solid var(--ColorBorder);
+	border-radius: 6px;
+	padding: 20px;
+}
+
+.settings_title {
+	font-size: 15px;
+	color: var(--ColorGold);
+	margin-bottom: 16px;
+}
+
+.settings_row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 0;
+	border-bottom: 1px solid var(--ColorBorder);
+}
+
+.settings_label {
+	font-size: 13px;
+	color: var(--ColorText);
+}
+
+.settings_value {
+	font-size: 13px;
+	color: var(--ColorTextDim);
+}
+
+.settings_toggle {
+	cursor: pointer;
+	user-select: none;
+}
+
+.settings_toggle.is_on .toggle_box {
+	background: var(--ColorText);
+	border-color: var(--ColorText);
+}
+
+.settings_toggle.is_on .toggle_dash {
+	background: #1a1714;
+}
+
+.settings_status {
+	margin-top: 16px;
+	font-size: 13px;
+	color: var(--ColorTextDim);
+	line-height: 1.7;
+}
+
+.settings_actions {
+	display: flex;
+	gap: 10px;
+	margin-top: 14px;
+}
+
+.update_progress {
+	margin-top: 14px;
+	height: 4px;
+	background: rgba(255, 255, 255, 0.08);
+	border-radius: 2px;
+	overflow: hidden;
+}
+
+.update_progress_bar {
+	height: 100%;
+	width: 0%;
+	background: var(--ColorGold);
+	transition: width 0.25s ease;
+}
+
+.update_notes {
+	margin-top: 16px;
+	padding-top: 14px;
+	border-top: 1px solid var(--ColorBorder);
+}
+
+.update_notes_title {
+	font-size: 13px;
+	color: var(--ColorGold);
+	margin-bottom: 6px;
+}
+
+.update_notes_body {
+	font-size: 12px;
+	color: var(--ColorTextDim);
+	line-height: 1.8;
+	white-space: pre-wrap;
+	margin-bottom: 12px;
+}
+
+.settings_proxy_row {
+	align-items: flex-start;
+	gap: 16px;
+}
+
+.settings_proxy_input {
+	display: flex;
+	gap: 8px;
+	flex: 1;
+	justify-content: flex-end;
+}
+
+.settings_proxy_input input {
+	flex: 1;
+	max-width: 340px;
+	background: var(--ColorPanelLight);
+	border: 1px solid var(--ColorBorder);
+	border-radius: 4px;
+	color: var(--ColorText);
+	padding: 7px 10px;
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+
+.settings_proxy_input input:focus {
+	border-color: var(--ColorAccent);
+}
+
+.settings_hint {
+	margin-top: 10px;
+	font-size: 12px;
+	color: var(--ColorTextDim);
+	opacity: 0.75;
+	line-height: 1.7;
+}
+
+.update_notes_group {
+	font-size: 12px;
+	color: var(--ColorGold);
+	margin: 10px 0 4px;
+	opacity: 0.9;
+}
+
+.update_notes_item {
+	position: relative;
+	font-size: 12px;
+	color: var(--ColorTextDim);
+	line-height: 1.8;
+	padding-left: 14px;
+}
+
+.update_notes_item::before {
+	content: "·";
+	position: absolute;
+	left: 4px;
+	color: var(--ColorAccent);
+}
+
+.update_notes_line {
+	font-size: 12px;
+	color: var(--ColorTextDim);
+	line-height: 1.8;
+}
+
+.update_notes_body strong {
+	color: var(--ColorText);
+	font-weight: 500;
 }

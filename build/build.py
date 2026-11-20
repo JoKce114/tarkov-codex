@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +24,8 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = r'{root}'
 
 datas = [
-	(ROOT + r'\\app\\seed', 'seed'),
+	(ROOT + r'\\app\\seed\\current.json', 'seed'),
+	(ROOT + r'\\app\\seed\\snapshots\\{generation}', 'seed/snapshots/{generation}'),
 	(ROOT + r'\\web', 'web'),
 	(ROOT + r'\\app\\icon.ico', '.'),
 	(ROOT + r'\\app\\icon.png', '.'),
@@ -62,6 +65,7 @@ exe = EXE(
 	upx=False,
 	console=False,
 	icon=ROOT + r'\\app\\icon.ico',
+	version=ROOT + r'\\build\\version_info.txt',
 )
 coll = COLLECT(
 	exe,
@@ -90,8 +94,67 @@ if __name__ == "__main__":
 	main()
 '''
 
+VERSION_INFO = """# UTF-8
+VSVersionInfo(
+	ffi=FixedFileInfo(
+		filevers={quad},
+		prodvers={quad},
+		mask=0x3f,
+		flags=0x0,
+		OS=0x40004,
+		fileType=0x1,
+		subtype=0x0,
+		date=(0, 0)
+	),
+	kids=[
+		StringFileInfo([
+			StringTable(
+				u'080404B0',
+				[
+					StringStruct(u'CompanyName', u'Tarkov Codex'),
+					StringStruct(u'FileDescription', u'{name}'),
+					StringStruct(u'FileVersion', u'{version}'),
+					StringStruct(u'InternalName', u'tarkov-codex'),
+					StringStruct(u'OriginalFilename', u'{name}.exe'),
+					StringStruct(u'ProductName', u'{name}'),
+					StringStruct(u'ProductVersion', u'{version}')
+				]
+			)
+		]),
+		VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+	]
+)
+"""
+
+
+def read_version() -> str:
+	text = (ROOT / "app" / "paths.py").read_text(encoding="utf-8")
+	match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+	if not match:
+		raise SystemExit("app/paths.py 里找不到 APP_VERSION")
+	return match.group(1)
+
+
+def write_version_info(version: str) -> Path:
+	parts = [int(piece) for piece in (version.split(".") + ["0", "0", "0"])[:4]]
+	quad = "(" + ", ".join(str(piece) for piece in parts) + ")"
+	target = BUILD_DIR / "version_info.txt"
+	target.write_text(
+		VERSION_INFO.format(quad=quad, version=version, name=APP_NAME),
+		encoding="utf-8",
+	)
+	return target
+
 
 def main() -> None:
+	seed = ROOT / "app" / "seed"
+	try:
+		generation = json.loads((seed / "current.json").read_text(encoding="utf-8"))["generation"]
+		if not re.fullmatch(r"[0-9a-f]{32}", generation) or not (seed / "snapshots" / generation).is_dir():
+			raise ValueError("出厂资料目录无效")
+	except (OSError, ValueError, TypeError, KeyError) as error:
+		raise SystemExit(f"请先运行 python scripts/build_seed.py（{error}）") from error
+
 	output_dir = DIST_DIR
 	# 上次的产物可能被资源管理器或杀毒占用，换个目录避免打包失败
 	if output_dir.exists():
@@ -106,9 +169,12 @@ def main() -> None:
 		shutil.rmtree(BUILD_DIR / "work", ignore_errors=True)
 
 	spec_file = BUILD_DIR / "打包.spec"
-	spec_text = SPEC.replace("{root}", str(ROOT).replace("\\", "\\\\")).replace("{name}", APP_NAME)
+	spec_text = SPEC.replace("{root}", str(ROOT).replace("\\", "\\\\")).replace("{name}", APP_NAME).replace("{generation}", generation)
 	spec_file.write_text(spec_text.strip(), encoding="utf-8")
 	(BUILD_DIR / "runner.py").write_text(RUNNER, encoding="utf-8")
+	version = read_version()
+	write_version_info(version)
+	print(f"版本号 {version} 已写入 exe 属性")
 
 	command = [
 		sys.executable,

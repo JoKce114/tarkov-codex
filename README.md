@@ -1,15 +1,14 @@
 # 塔科夫百科
 
-逃离塔科夫的本地资料查询工具。桌面程序，离线可用，数据自动同步。
+逃离塔科夫的本地资料查询工具。游戏资料来自 Tarkov.dev，下载后可离线查询。
 
 ## 功能
 
-- **物品图鉴**：5498 件物品的价格、属性、兑换配方、制作配方
-- **商人任务**：全部任务的目标、前置条件、奖励、地图点位、图文攻略
-- **地图**：13 张地图的高清汉化图，含撤离点、BOSS、钥匙
-- **商人**：11 个商人的忠诚等级、在售物品、发布任务
+- **物品图鉴**：物品的价格、属性、兑换配方和制作配方
+- **商人任务**：任务目标、前置条件、奖励、地图点位和 Wiki 链接
+- **地图**：按游戏模式显示撤离点、BOSS、转移点和钥匙
+- **商人**：商人的忠诚等级、在售物品、发布任务
 - **兑换配方 / 藏身处制作 / 藏身处升级**：全部配方与建造材料
-- **激活码**：当前有效的兑换码
 
 支持 PVE / PVP / SEASON 三种游戏模式的数据切换，任务进度本地保存。
 
@@ -22,28 +21,40 @@ pip install -r requirements.txt
 python -m app.main
 ```
 
-首次启动会自动从 [tarkov.dev](https://tarkov.dev) 下载数据，约 1-2 分钟。
-之后可完全离线使用，需要更新时点界面上的同步按钮。
+打包版自带出厂资料。开发环境没有资料时，点击首页「重建全部资料」下载三种模式的数据。
+重建在后台进行，已有资料仍可查询。新资料校验通过后一次启用。
+图标和地图底图按需加载并缓存到本地。
 
 ## 打包
 
 ```bash
-python scripts/build_seed.py        # 生成出厂数据
-python scripts/build_extra_seed.py  # 加入地图、攻略、激活码
+python scripts/build_seed.py        # 从 Tarkov.dev 全量生成出厂资料
 python build/build.py               # 打包到 dist/
+python scripts/release.py           # 生成 release/ 下的更新包和 latest.json
 ```
+
+## 发布更新
+
+1. 改 `app/paths.py` 里的 `APP_VERSION`
+2. 依次执行上面的打包命令
+3. 在发布仓库 `tarkov-codex-releases` 新建 Release，tag 用 `v<版本>`
+4. 上传 `release/` 下的 zip 和 `latest.json`
+
+程序启动后每 24 小时查一次版本：先读 Release 的 `latest.json` 静态附件（不占用
+GitHub API 配额），确认有新版本才调一次接口取更新说明。被限流时会把恢复时间记在
+本地，期间不再发请求。
+
+国内网络直连不上 `github.com`，在「设置 → 自动更新 → 代理地址」里填写本机代理端口
+（如 `http://127.0.0.1:7897`）即可检查和下载更新。代理只接受 http/https 地址。
 
 ## 数据来源
 
 | 内容 | 来源 |
 |---|---|
-| 物品、任务、商人、配方 | [tarkov.dev](https://tarkov.dev) 公开接口 |
-| 地图与标记点 | [TarkovBox](https://www.tarkovbox.com) |
-| 任务攻略 | [TarkovBox](https://www.tarkovbox.com) / [OPtarkov](https://www.optarkov.com) |
-| 地图绘制 | [RE3MR](https://re3mr.com) |
+| 物品、任务、地图、商人、配方 | [json.tarkov.dev](https://json.tarkov.dev) |
+| 图标与地图底图 | [assets.tarkov.dev](https://assets.tarkov.dev) |
 
-数据版权归各来源所有。本仓库**只包含程序代码**，不包含任何游戏素材或第三方内容；
-数据由使用者在本地自行下载。
+游戏资料和图片由 Tarkov.dev 提供，生成的缓存和出厂资料不纳入版本控制。
 
 ## 目录结构
 

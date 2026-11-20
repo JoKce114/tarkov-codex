@@ -37,6 +37,3 @@ def file_name(key: str) -> str:
 def translation_file_name(key: str) -> str:
 	return f"{key}_{LANG}.json"
 
-
-def translation_dataset_key(key: str) -> str:
-	return f"{key}_{LANG}"

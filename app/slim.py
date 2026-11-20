@@ -76,7 +76,7 @@ def slim_items(payload: dict) -> dict:
 
 
 def slim_maps(payload: dict) -> dict:
-	"""地图：只留任务页要用的地图名和规范化名，其余（刷新点、战利品、怪物）全部丢弃。"""
+	"""保留地图页和任务点位所需信息，去掉体积较大的战利品及刷新点。"""
 	body = payload.get("data")
 	if not isinstance(body, dict):
 		return payload
@@ -84,14 +84,13 @@ def slim_maps(payload: dict) -> dict:
 	if not isinstance(maps, dict):
 		return payload
 
-	slim = {
-		map_id: {
-			"name": entry.get("name") or "",
-			"normalizedName": entry.get("normalizedName") or "",
-		}
-		for map_id, entry in maps.items()
+	fields = ("name", "normalizedName", "description", "players", "raidDuration", "wiki",
+		"extracts", "bosses", "transits", "hazards", "locks", "accessKeys")
+	payload["data"] = {
+		"maps": {map_id: {field: entry[field] for field in fields if field in entry}
+			for map_id, entry in maps.items()},
+		"mobs": {mob_id: {"name": entry.get("name")} for mob_id, entry in (body.get("mobs") or {}).items()},
 	}
-	payload["data"] = {"maps": slim}
 	return payload
 
 

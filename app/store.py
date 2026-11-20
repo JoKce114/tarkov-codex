@@ -23,7 +23,10 @@ class DataStore:
 		self.payloads: dict[str, dict] = {}
 		self.items: dict[str, dict] = {}
 		self.tasks: dict[str, dict] = {}
+		self.achievements: dict[str, dict] = {}
 		self.maps: dict[str, dict] = {}
+		self.mobs: dict[str, dict] = {}
+		self.map_ids_by_slug: dict[str, str] = {}
 		self.traders: dict[str, dict] = {}
 		self.hideout: dict[str, dict] = {}
 		self.barters: list[dict] = []
@@ -70,23 +73,11 @@ class DataStore:
 		tasks = self.payloads.get("tasks", {}).get("data", {}).get("tasks") or {}
 		self.tasks = tasks if isinstance(tasks, dict) else {}
 
-		# tarkov.dev 的地图数据里 mobs / lootContainers / spawns 等占 45MB 且界面用不到，
-		# 只保留任务要用到的「地图名 + 规范化名」，加载后立即丢弃其余部分。
 		map_data = self.payloads.get("maps", {}).get("data") or {}
-		raw_maps = map_data.get("maps") or {}
-		self.maps = (
-			{
-				map_id: {
-					"name": entry.get("name") or "",
-					"normalizedName": entry.get("normalizedName") or "",
-				}
-				for map_id, entry in raw_maps.items()
-			}
-			if isinstance(raw_maps, dict)
-			else {}
-		)
-		if "maps" in self.payloads:
-			self.payloads["maps"]["data"] = {"maps": self.maps}
+		self.maps = map_data.get("maps") or {}
+		self.mobs = map_data.get("mobs") or {}
+		self.map_ids_by_slug = {entry["normalizedName"]: map_id for map_id, entry in self.maps.items()
+			if entry.get("normalizedName")}
 
 		traders = self.payloads.get("traders", {}).get("data") or {}
 		self.traders = traders if isinstance(traders, dict) else {}
@@ -120,6 +111,12 @@ class DataStore:
 			}
 
 		self._build_relations()
+
+	def validate_references(self) -> None:
+		unknown_traders = {task.get("trader") for task in self.tasks.values() if task.get("trader")} - self.traders.keys()
+		unknown_maps = {task.get("map") for task in self.tasks.values() if task.get("map")} - self.maps.keys()
+		if unknown_traders or unknown_maps:
+			raise ValueError(f"任务关联异常（商人 {len(unknown_traders)} 项，地图 {len(unknown_maps)} 项）")
 
 	ITEM_FIELDS = (
 		"id",
@@ -197,7 +194,6 @@ class DataStore:
 					self._crafts_by_input.setdefault(item_id, []).append(craft)
 
 		self._tasks_by_item = {}
-		self.achievements: dict[str, dict] = {}
 		for task in self.tasks.values():
 			for objective in task.get("objectives") or []:
 				for item_id in objective.get("items") or []:
@@ -879,4 +875,3 @@ class DataStore:
 				"limit": limit,
 				"crafts": [self._craft_view(entry) for entry in page],
 			}
-

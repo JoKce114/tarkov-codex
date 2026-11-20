@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import threading
 from pathlib import Path
 
@@ -54,8 +53,6 @@ class MapConfig:
 						"rotation": entry.get("coordinateRotation") or 0,
 						"svg": entry.get("svgPath"),
 						"svgLayer": entry.get("svgLayer"),
-						"width": 0.0,
-						"height": 0.0,
 					}
 					self._interactive[record["key"]] = record
 					self._by_normalized[record["normalized"]] = record
@@ -72,20 +69,21 @@ class MapConfig:
 		record = self.entry_by_normalized(normalized)
 		return record["key"] if record else ""
 
-	def set_viewbox(self, key: str, width: float, height: float) -> None:
+	def svg_jobs(self) -> list[tuple[str, str]]:
+		"""全部地图矢量图的 (缓存键, 远程地址)，用于批量预下载。"""
 		self._ensure()
-		record = self._interactive.get(key)
-		if record:
-			record["width"] = width
-			record["height"] = height
+		seen: dict[str, str] = {}
+		for record in self._interactive.values():
+			key = record.get("key") or ""
+			url = record.get("svg") or ""
+			if key and url and key not in seen:
+				seen[key] = url
+		return list(seen.items())
 
-	def to_svg(self, key: str, x: float, z: float) -> tuple[float, float] | None:
+	def to_normalized(self, key: str, x: float, z: float) -> tuple[float, float] | None:
 		self._ensure()
 		record = self._interactive.get(key)
 		if not record or not record.get("bounds"):
-			return None
-		width, height = record.get("width") or 0.0, record.get("height") or 0.0
-		if width <= 0 or height <= 0:
 			return None
 
 		bounds = record["bounds"]
@@ -104,19 +102,7 @@ class MapConfig:
 			return None
 
 		return (
-			(x - lng_min) / (lng_max - lng_min) * width,
-			(lat_max - z) / (lat_max - lat_min) * height,
+			(x - lng_min) / (lng_max - lng_min),
+			(lat_max - z) / (lat_max - lat_min),
 		)
 
-
-def read_viewbox(svg_text: str) -> tuple[float, float] | None:
-	match = re.search(r'viewBox\s*=\s*"([^"]+)"', svg_text[:2000])
-	if not match:
-		return None
-	parts = match.group(1).replace(",", " ").split()
-	if len(parts) != 4:
-		return None
-	try:
-		return float(parts[2]), float(parts[3])
-	except ValueError:
-		return None

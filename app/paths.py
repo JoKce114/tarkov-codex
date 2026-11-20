@@ -8,7 +8,7 @@ from .datasets import DEFAULT_MODE, is_valid_mode
 
 APP_NAME = "塔科夫百科"
 APP_ID = "tarkov-codex"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 FROZEN = bool(getattr(sys, "frozen", False))
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -19,7 +19,6 @@ DATA_DIR = BASE_DIR / "data"
 ICON_DIR = DATA_DIR / "icons"
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = BASE_DIR / "logs"
-META_FILE = DATA_DIR / "sync_meta.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
 SEED_DIR = (RESOURCE_DIR / "seed") if FROZEN else (PACKAGE_DIR / "seed")

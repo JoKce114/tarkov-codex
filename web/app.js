@@ -50,14 +50,6 @@ const MODULES = [
 		desc: "各设施每级所需材料与条件",
 		ready: true,
 	},
-	{
-		key: "cdk",
-		name: "激活码",
-		icon: "✦",
-		desc: "当前有效的兑换码与奖励物品",
-		ready: true,
-		countFrom: "cdk",
-	},
 ];
 
 const state = {
@@ -94,11 +86,10 @@ const state = {
 	barterQuery: "",
 	craftOffset: 0,
 	craftQuery: "",
-	gameMapCount: 0,
-	traderCount: 0,
 	currentMapImage: "",
 	currentMapOriginal: "",
 	currentMapTitle: "",
+	drawerRequestId: 0,
 };
 
 function el(tag, className, text) {
@@ -156,12 +147,12 @@ function showView(name) {
 	document.getElementById("view_home").hidden = name !== "home";
 	document.getElementById("view_items").hidden = name !== "items";
 	document.getElementById("view_tasks").hidden = name !== "tasks";
-	document.getElementById("view_cdk").hidden = name !== "cdk";
 	document.getElementById("view_traders").hidden = name !== "traders";
 	document.getElementById("view_barters").hidden = name !== "barters";
 	document.getElementById("view_crafts").hidden = name !== "crafts";
 	document.getElementById("view_hideout").hidden = name !== "hideout";
 	document.getElementById("view_maps").hidden = name !== "maps";
+	document.getElementById("view_settings").hidden = name !== "settings";
 	document.getElementById("search_wrap").hidden = name !== "items";
 	document.getElementById("btn_back").hidden = name === "home";
 }
@@ -550,39 +541,31 @@ function renderMapBlock(group) {
 		controls.appendChild(button);
 	});
 
-	fetch(`/api/map/svg/${encodeURIComponent(group.mapKey)}`)
-		.then((response) => (response.ok ? response.text() : ""))
-		.then((svgText) => {
-			if (!svgText) {
-				canvas.appendChild(el("div", "map_hint", "地图图片加载失败"));
-				return;
-			}
-			const holder = document.createElement("div");
-			holder.innerHTML = svgText;
-			const svg = holder.querySelector("svg");
-			if (!svg) {
-				canvas.appendChild(el("div", "map_hint", "地图数据异常"));
-				return;
-			}
-			svg.setAttribute("width", String(group.width));
-			svg.setAttribute("height", String(group.height));
-			svg.style.width = `${group.width}px`;
-			svg.style.height = `${group.height}px`;
-
-			const overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
+	const image = el("img", "task_map_image");
+	image.alt = group.mapName;
+	image.decoding = "async";
+	image.loading = "lazy";
+	image.addEventListener("load", () => {
+			group.width = image.naturalWidth;
+			group.height = image.naturalHeight;
+			// 只有 viewBox 的底图需要显式尺寸，点位层也会跟随这张图布局。
+			image.width = group.width;
+			image.height = group.height;
+			const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			overlay.setAttribute("class", "task_map_overlay");
+			overlay.setAttribute("viewBox", `0 0 ${group.width} ${group.height}`);
 			group.points.forEach((point) => {
 				const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-				circle.setAttribute("cx", String(point.x));
-				circle.setAttribute("cy", String(point.y));
-				circle.setAttribute("r", "9");
+				circle.setAttribute("cx", String(point.x * group.width));
+				circle.setAttribute("cy", String(point.y * group.height));
+				circle.setAttribute("r", String(Math.max(group.width, group.height) * 0.006));
 				circle.setAttribute("class", point.optional ? "map_dot is_optional" : "map_dot");
 				const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
 				title.textContent = point.label;
 				circle.appendChild(title);
 				overlay.appendChild(circle);
 			});
-			svg.appendChild(overlay);
-			canvas.appendChild(svg);
+			canvas.appendChild(overlay);
 
 			state.ready = true;
 			fit();
@@ -625,10 +608,12 @@ function renderMapBlock(group) {
 				state.scale = next;
 				apply();
 			}, { passive: false });
-		})
-		.catch(() => {
-			canvas.appendChild(el("div", "map_hint", "地图图片加载失败"));
-		});
+	}, { once: true });
+	image.addEventListener("error", () => {
+		canvas.replaceChildren(el("div", "map_hint", "地图图片加载失败"));
+	}, { once: true });
+	image.src = `/api/map/svg/${encodeURIComponent(group.mapKey)}`;
+	canvas.appendChild(image);
 
 	block.appendChild(head);
 	block.appendChild(viewport);
@@ -637,24 +622,36 @@ function renderMapBlock(group) {
 }
 
 async function openTask(taskId) {
+	const requestId = ++state.drawerRequestId;
 	const body = document.getElementById("drawer_body");
 	body.innerHTML = '<div class="loading_block">读取中…</div>';
 	document.getElementById("drawer").hidden = false;
 	document.getElementById("drawer_mask").hidden = false;
 	document.getElementById("drawer").scrollTop = 0;
 	try {
-		const [payload, mapPayload, guidePayload] = await Promise.all([
-			getJson(`/api/tasks/${encodeURIComponent(taskId)}`),
-			getJson(`/api/tasks/${encodeURIComponent(taskId)}/map`).catch(() => ({ maps: [] })),
-			getJson(`/api/tasks/${encodeURIComponent(taskId)}/guides`).catch(() => ({ guides: [] })),
-		]);
-		renderTaskDetail(payload.task, mapPayload.maps || [], guidePayload.guides || []);
+		const url = `/api/tasks/${encodeURIComponent(taskId)}`;
+		const payload = await getJson(url);
+		if (requestId !== state.drawerRequestId) {
+			return;
+		}
+		renderTaskDetail(payload.task);
+		getJson(`${url}/map`).then((result) => {
+			if (requestId !== state.drawerRequestId || !result.maps.length) {
+				return;
+			}
+			const section = el("div", "section");
+			section.appendChild(sectionTitle("地图点位"));
+			result.maps.forEach((group) => section.appendChild(renderMapBlock(group)));
+			body.appendChild(section);
+		}).catch(() => {});
 	} catch (error) {
-		body.innerHTML = `<div class="loading_block">读取失败：${error.message}</div>`;
+		if (requestId === state.drawerRequestId) {
+			body.replaceChildren(el("div", "loading_block", `读取失败：${error.message}`));
+		}
 	}
 }
 
-function renderTaskDetail(task, mapGroups, taskGuides) {
+function renderTaskDetail(task) {
 	const body = document.getElementById("drawer_body");
 	body.innerHTML = "";
 
@@ -743,20 +740,6 @@ function renderTaskDetail(task, mapGroups, taskGuides) {
 		body.appendChild(section);
 	}
 
-	if ((mapGroups || []).length) {
-		const section = el("div", "section");
-		section.appendChild(sectionTitle("地图点位"));
-		mapGroups.forEach((group) => section.appendChild(renderMapBlock(group)));
-		body.appendChild(section);
-	}
-
-	if ((taskGuides || []).length) {
-		const section = el("div", "section");
-		section.appendChild(sectionTitle("攻略指南"));
-		taskGuides.forEach((guide) => section.appendChild(renderGuideSource(guide)));
-		body.appendChild(section);
-	}
-
 	if ((task.neededKeys || []).length) {
 		const section = el("div", "section");
 		section.appendChild(sectionTitle("需要钥匙"));
@@ -830,6 +813,7 @@ async function switchMode(modeKey) {
 			throw new Error(payload.error || "切换失败");
 		}
 		state.mode = modeKey;
+		closeDrawer();
 		state.category = "";
 		state.query = "";
 		state.offset = 0;
@@ -837,7 +821,10 @@ async function switchMode(modeKey) {
 		document.getElementById("search_input").value = "";
 		renderModeSwitch();
 		await refreshSync();
-		await renderHome(payload);
+		renderHome(payload);
+		if (state.view === "maps") {
+			await loadMaps();
+		}
 		if (state.view === "items") {
 			const categories = await getJson("/api/categories");
 			renderCategories(categories.tree);
@@ -862,47 +849,34 @@ async function switchMode(modeKey) {
 }
 
 function checkFirstRun(stats) {
+	const existing = document.getElementById("first_run");
 	if (!stats.empty) {
+		existing?.remove();
+		return;
+	}
+	if (existing) {
 		return;
 	}
 	const banner = el("div", "first_run");
+	banner.id = "first_run";
 	banner.appendChild(el("div", "first_run_title", "首次使用，需要先下载数据"));
 	banner.appendChild(
 		el(
 			"div",
 			"first_run_text",
-			"点下面的按钮从 tarkov.dev 下载物品、任务、地图等数据（约 1-2 分钟）。下载完就能用了，之后可以离线使用。",
+			"从 Tarkov.dev 下载三种游戏模式的物品、任务和地图。完成后可以离线查询文字资料。",
 		),
 	);
 	const button = el("button", "btn_primary", "开始下载数据");
-	button.addEventListener("click", async () => {
-		button.disabled = true;
-		button.textContent = "下载中，请稍候…";
-		await fetch("/api/sync/now", { method: "POST" });
-		const timer = setInterval(async () => {
-			const sync = await getJson("/api/sync/status");
-			if (!sync.running) {
-				clearInterval(timer);
-				const reloaded = await fetch("/api/data/reload", { method: "POST" }).then((r) => r.json());
-				banner.remove();
-				await refreshAll();
-			}
-		}, 2000);
-	});
+	button.addEventListener("click", () => document.getElementById("btn_sync_all").click());
 	banner.appendChild(button);
 	document.getElementById("view_home").prepend(banner);
 }
 
 async function refreshAll() {
-	const [stats, gameMaps, traderList] = await Promise.all([
-		getJson("/api/stats"),
-		getJson("/api/game-maps").catch(() => ({ maps: [] })),
-		getJson("/api/traders").catch(() => ({ traders: [] })),
-	]);
-	state.gameMapCount = (gameMaps.maps || []).length;
-	state.traderCount = (traderList.traders || []).length;
+	const stats = await getJson("/api/stats");
 	renderHome(stats);
-	refreshSync();
+	checkFirstRun(stats);
 }
 
 function renderHome(stats) {
@@ -921,15 +895,7 @@ function renderHome(stats) {
 		}
 		card.appendChild(name);
 		card.appendChild(el("div", "module_desc", module.desc));
-		if (module.key !== "cdk") {
-			let value = counts[module.key] || 0;
-			if (module.key === "maps") {
-				value = state.gameMapCount;
-			} else if (module.key === "traders") {
-				value = state.traderCount || value;
-			}
-			card.appendChild(el("div", "module_count", `${formatNumber(value)} 条`));
-		}
+		card.appendChild(el("div", "module_count", `${formatNumber(counts[module.key] || 0)} 条`));
 		if (module.ready) {
 			card.addEventListener("click", () => openModule(module.key));
 		}
@@ -943,8 +909,8 @@ function renderHome(stats) {
 		`模式 ${modeLabel}`,
 		`物品 ${formatNumber(counts.items || 0)}`,
 		`任务 ${formatNumber(counts.tasks || 0)}`,
-		`地图 ${formatNumber(state.gameMapCount)}`,
-		`商人 ${formatNumber(state.traderCount || counts.traders || 0)}`,
+		`地图 ${formatNumber(counts.maps || 0)}`,
+		`商人 ${formatNumber(counts.traders || 0)}`,
 		`兑换 ${formatNumber(counts.barters || 0)}`,
 		`制作 ${formatNumber(counts.crafts || 0)}`,
 	].forEach((text) => status.appendChild(el("span", "", text)));
@@ -962,9 +928,6 @@ async function openModule(key) {
 	if (key === "tasks") {
 		await loadTaskFilters();
 		await loadTasks();
-	}
-	if (key === "cdk") {
-		await loadCdk();
 	}
 	if (key === "traders") {
 		await loadTraders();
@@ -994,8 +957,6 @@ function mapImageUrl(url) {
 /* ---------- 快速打开地图 ---------- */
 
 const quickMap = {
-	maps: [],
-	loaded: false,
 	focusIndex: -1,
 };
 
@@ -1019,32 +980,9 @@ function quickMapThumb(entry) {
 	return entry.previewUrl || "";
 }
 
-function quickMapOriginal(entry) {
-	if (!entry) {
-		return "";
-	}
-	if (entry.images && entry.images.length) {
-		return entry.images[0].originalUrl || entry.images[0].previewUrl || entry.images[0].url || "";
-	}
-	return entry.previewUrl || "";
-}
-
 async function ensureQuickMapData() {
-	if (quickMap.loaded) {
-		return quickMap.maps;
-	}
 	const payload = await getJson("/api/game-maps");
-	const summaries = payload.maps || [];
-	const detailed = await Promise.all(
-		summaries.map((entry) =>
-			getJson(`/api/game-maps/${encodeURIComponent(entry.slug)}`)
-				.then((result) => result.map)
-				.catch(() => entry),
-		),
-	);
-	quickMap.maps = detailed;
-	quickMap.loaded = true;
-	return quickMap.maps;
+	return payload.maps || [];
 }
 
 function renderQuickMapList(maps) {
@@ -1053,7 +991,7 @@ function renderQuickMapList(maps) {
 	quickMap.focusIndex = -1;
 
 	if (!maps.length) {
-		list.appendChild(el("div", "quick_map_empty", "地图数据还没同步，请先同步地图数据"));
+		list.appendChild(el("div", "quick_map_empty", "地图数据还没下载，请先重建全部资料"));
 		return;
 	}
 
@@ -1076,39 +1014,24 @@ function renderQuickMapList(maps) {
 		if (entry.raidDuration) {
 			meta.push(`${entry.raidDuration} 分钟`);
 		}
-		if ((entry.exits || []).length) {
-			meta.push(`撤离 ${entry.exits.length}`);
+		if (entry.exitCount) {
+			meta.push(`撤离 ${entry.exitCount}`);
 		}
 		info.appendChild(el("div", "quick_map_meta", meta.join(" · ")));
 		item.appendChild(info);
 		item.appendChild(el("span", "quick_map_open", "打开 ↗"));
 
-		item.addEventListener("click", () => openMapInSystem(entry, quickMapOriginal(entry)));
+		item.addEventListener("click", () => {
+			hideQuickMap();
+			if (entry.previewUrl) {
+				openMapViewer(entry.previewUrl, entry.name || "地图");
+			} else {
+				showView("maps");
+				loadMaps(entry.slug);
+			}
+		});
 		list.appendChild(item);
 	});
-}
-
-async function openMapInSystem(entry, imageUrl) {
-	if (!imageUrl) {
-		toast("这张地图还没有图片", true);
-		return;
-	}
-	hideQuickMap();
-	toast(`正在下载原图并打开「${entry.name || ""}」，首次需要几秒…`);
-	try {
-		const payload = await fetch("/api/open-file", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ url: imageUrl }),
-		}).then((response) => response.json());
-		if (payload.ok) {
-			toast(`已在系统看图工具中打开「${entry.name || ""}」`);
-		} else {
-			toast(`打开失败：${payload.error || "未知错误"}`, true);
-		}
-	} catch (error) {
-		toast(`打开失败：${error.message}`, true);
-	}
 }
 
 function showQuickMap() {
@@ -1178,17 +1101,19 @@ function setupQuickMap() {
 	});
 }
 
-async function loadMaps() {
+async function loadMaps(selectedSlug) {
 	const payload = await getJson("/api/game-maps");
 	const list = document.getElementById("map_list");
 	list.innerHTML = "";
 	const maps = payload.maps || [];
 	document.getElementById("maps_info").textContent = maps.length
-		? `共 ${maps.length} 张地图 · 更新于 ${formatTime(payload.status && payload.status.syncedAt)}`
+		? `共 ${maps.length} 张地图`
 		: "地图数据尚未同步";
 
 	if (!maps.length) {
-		document.getElementById("map_placeholder").textContent = "地图数据尚未同步，点右上角「刷新地图数据」";
+		document.getElementById("map_placeholder").textContent = "请先从首页重建全部资料";
+		document.getElementById("map_placeholder").hidden = false;
+		document.getElementById("map_detail").hidden = true;
 		return;
 	}
 
@@ -1207,7 +1132,8 @@ async function loadMaps() {
 		list.appendChild(item);
 	});
 
-	selectMap(maps[0].slug, list.firstChild);
+	const selectedIndex = Math.max(0, maps.findIndex((entry) => entry.slug === selectedSlug));
+	selectMap(maps[selectedIndex].slug, list.children[selectedIndex]);
 }
 
 async function selectMap(slug, node) {
@@ -1222,7 +1148,9 @@ async function selectMap(slug, node) {
 
 	try {
 		const payload = await getJson(`/api/game-maps/${encodeURIComponent(slug)}`);
-		renderMapDetail(payload.map);
+		if (node?.classList.contains("is_active") && node.isConnected) {
+			renderMapDetail(payload.map);
+		}
 	} catch (error) {
 		detail.querySelector("#map_title").textContent = `读取失败：${error.message}`;
 	}
@@ -1830,157 +1758,6 @@ function setupMapViewer() {
 	image.addEventListener("dragstart", (event) => event.preventDefault());
 }
 
-function cdkRewardIcon(entry) {
-	const wrapper = el("span", "cdk_reward");
-	const image = document.createElement("img");
-	image.src = iconUrl(entry.id);
-	image.loading = "lazy";
-	image.alt = "";
-	image.addEventListener("error", () => image.remove(), { once: true });
-	wrapper.appendChild(image);
-	wrapper.appendChild(el("span", "", `${entry.name} ×${formatNumber(entry.quantity)}`));
-	wrapper.title = entry.name || "";
-	return wrapper;
-}
-
-function renderCdk(payload) {
-	const list = document.getElementById("cdk_list");
-	list.innerHTML = "";
-	const items = payload.items || [];
-
-	document.getElementById("cdk_info").textContent = items.length
-		? `当前有效的兑换码 ${items.length} 个 · 更新于 ${formatTime(payload.status && payload.status.syncedAt)}`
-		: "暂时没有有效的兑换码";
-
-	items.forEach((entry) => {
-		const card = el("div", "cdk_card");
-
-		const head = el("div", "cdk_head");
-		head.appendChild(el("div", "cdk_title", entry.title || "兑换码"));
-		if (entry.tag) {
-			head.appendChild(el("span", "cdk_tag", entry.tag));
-		}
-		card.appendChild(head);
-
-		const row = el("div", "cdk_code_row");
-		const code = el("div", "cdk_code", entry.code);
-		const copy = el("button", "cdk_copy", "复制");
-		copy.addEventListener("click", async () => {
-			try {
-				await navigator.clipboard.writeText(entry.code);
-				copy.textContent = "已复制";
-				copy.classList.add("is_done");
-				setTimeout(() => {
-					copy.textContent = "复制";
-					copy.classList.remove("is_done");
-				}, 1500);
-			} catch (error) {
-				const range = document.createRange();
-				range.selectNodeContents(code);
-				const selection = window.getSelection();
-				selection.removeAllRanges();
-				selection.addRange(range);
-			}
-		});
-		row.appendChild(code);
-		row.appendChild(copy);
-		card.appendChild(row);
-
-		if (entry.description) {
-			card.appendChild(el("div", "cdk_desc", entry.description));
-		}
-
-		const meta = el("div", "cdk_meta");
-		const start = entry.startDate ? formatTime(entry.startDate.slice(0, 19)) : "";
-		const end = entry.endDate ? formatTime(entry.endDate.slice(0, 19)) : "长期有效";
-		if (start) {
-			meta.appendChild(el("span", "", `开始 ${start}`));
-		}
-		meta.appendChild(el("span", "", `结束 ${end}`));
-		card.appendChild(meta);
-
-		if ((entry.rewards || []).length) {
-			const rewards = el("div", "cdk_rewards");
-			entry.rewards.forEach((reward) => {
-				if (reward.id) {
-					rewards.appendChild(cdkRewardIcon(reward));
-				} else {
-					rewards.appendChild(el("span", "cdk_reward", `${reward.name} ×${formatNumber(reward.quantity)}`));
-				}
-			});
-			card.appendChild(rewards);
-		}
-
-		list.appendChild(card);
-	});
-}
-
-async function loadCdk() {
-	const payload = await getJson("/api/cdk");
-	renderCdk(payload);
-}
-
-function showImageViewer(url) {
-	const viewer = el("div", "image_viewer");
-	const image = document.createElement("img");
-	image.src = url;
-	image.alt = "";
-	viewer.appendChild(image);
-	viewer.addEventListener("click", () => viewer.remove());
-	document.body.appendChild(viewer);
-}
-
-function renderGuideSource(guide) {
-	const block = el("div", "guide_source");
-
-	const head = el("div", "guide_source_head");
-	head.appendChild(el("span", "guide_source_name", guide.sourceName || guide.source));
-	const link = el("a", "guide_source_link", "查看原页面");
-	link.href = guide.sourceUrl;
-	link.target = "_blank";
-	link.rel = "noreferrer";
-	head.appendChild(link);
-	block.appendChild(head);
-
-	const body = el("div", "guide_body");
-	(guide.sections || []).forEach((section) => {
-		if (section.type === "text") {
-			body.appendChild(el("div", "guide_text", section.text || ""));
-		} else if (section.type === "table") {
-			body.appendChild(el("div", "guide_text", section.text || ""));
-		} else if (section.type === "tip") {
-			body.appendChild(el("div", "guide_tip", section.text || ""));
-		} else if (section.type === "howto") {
-			body.appendChild(el("div", "guide_howto", section.text || ""));
-		} else if (section.type === "image") {
-			const group = el("div", "guide_image_group");
-			if (section.title) {
-				group.appendChild(el("div", "guide_image_title", section.title));
-			}
-			const grid = el("div", "guide_image_grid");
-			(section.images || []).forEach((image) => {
-				const node = document.createElement("img");
-				node.loading = "lazy";
-				node.src = `/api/guide/image?path=${encodeURIComponent(image.local || image.url)}`;
-				node.alt = section.title || "";
-				node.addEventListener("click", () => showImageViewer(node.src));
-				grid.appendChild(node);
-			});
-			group.appendChild(grid);
-			body.appendChild(group);
-		} else if (section.type === "video") {
-			const link2 = el("a", "guide_video", "观看视频攻略");
-			link2.href = section.url;
-			link2.target = "_blank";
-			link2.rel = "noreferrer";
-			body.appendChild(link2);
-		}
-	});
-
-	block.appendChild(body);
-	return block;
-}
-
 function goHome() {
 	showView("home");
 	closeDrawer();
@@ -2353,6 +2130,7 @@ function renderDetail(item) {
 }
 
 async function openItem(itemId) {
+	const requestId = ++state.drawerRequestId;
 	const drawer = document.getElementById("drawer");
 	const mask = document.getElementById("drawer_mask");
 	const body = document.getElementById("drawer_body");
@@ -2362,28 +2140,50 @@ async function openItem(itemId) {
 	drawer.scrollTop = 0;
 	try {
 		const payload = await getJson(`/api/items/${encodeURIComponent(itemId)}`);
-		renderDetail(payload.item);
+		if (requestId === state.drawerRequestId) {
+			renderDetail(payload.item);
+		}
 	} catch (error) {
-		body.innerHTML = `<div class="loading_block">读取失败：${error.message}</div>`;
+		if (requestId === state.drawerRequestId) {
+			body.replaceChildren(el("div", "loading_block", `读取失败：${error.message}`));
+		}
 	}
 }
 
 function closeDrawer() {
+	state.drawerRequestId++;
 	document.getElementById("drawer").hidden = true;
 	document.getElementById("drawer_mask").hidden = true;
 }
 
 function renderSyncState(sync) {
 	const badge = document.getElementById("sync_state");
-	const button = document.getElementById("btn_sync");
+	const dataProgress = sync.progress || {};
+	const bar = document.getElementById("sync_progress");
+	const fill = document.getElementById("sync_progress_bar");
 	badge.className = "sync_state";
+
+	const setBar = (ratio, text) => {
+		bar.hidden = false;
+		fill.style.width = `${Math.round(Math.min(1, Math.max(0, ratio)) * 100)}%`;
+		fill.title = text;
+	};
+	const hideBar = () => {
+		bar.hidden = true;
+		fill.style.width = "0%";
+	};
+
 	if (sync.running) {
+		const total = dataProgress.total || 0;
+		const done = dataProgress.done || 0;
 		badge.classList.add("is_running");
-		badge.textContent = "正在同步…";
-		button.disabled = true;
+		badge.textContent = total
+			? `正在同步数据 ${formatNumber(done)} / ${formatNumber(total)}${dataProgress.label ? ` · ${dataProgress.label}` : ""}`
+			: "正在同步数据…";
+		setBar(total ? done / total : 0, badge.textContent);
 		return;
 	}
-	button.disabled = false;
+	hideBar();
 	const result = sync.lastResult;
 	if (result && result.errors && result.errors.length > 0) {
 		badge.classList.add("is_error");
@@ -2402,6 +2202,228 @@ async function refreshSync() {
 	const sync = await getJson("/api/sync/status");
 	renderSyncState(sync);
 	return sync;
+}
+
+/* ---------- 设置：自动更新 ---------- */
+
+const updateUi = { timer: null };
+
+async function openSettings() {
+	showView("settings");
+	await refreshUpdateStatus();
+	scheduleUpdatePoll();
+}
+
+function versionLabel(text) {
+	const clean = String(text || "").replace(/^v/i, "");
+	return clean ? `v${clean}` : "--";
+}
+
+function updateStatusText(status) {
+	const progress = status.progress || {};
+	if (progress.phase === "downloading") {
+		return `正在下载安装包 ${progress.percent || 0}%`;
+	}
+	if (progress.phase === "downloaded") {
+		return "安装包已下载完成，点击「安装并重启」完成更新";
+	}
+	if (progress.phase === "error" && progress.message) {
+		return progress.message;
+	}
+	const result = status.result;
+	if (!result) {
+		return status.lastError || "点击右侧按钮检查是否有新版本";
+	}
+	if (!result.ok) {
+		return result.message || "检查更新失败";
+	}
+	const suffix = result.warning ? `（${result.warning}）` : "";
+	if (result.hasUpdate) {
+		const how = result.manualOnly ? "，请前往发布页下载" : "";
+		return `发现新版本 ${versionLabel(result.latest)}${how}${suffix}`;
+	}
+	return result.latest ? `已是最新版本（${versionLabel(status.current)}）${suffix}` : `已是最新版本${suffix}`;
+}
+
+function renderNotesBody(text) {
+	/* 只处理更新日志用得到的写法：### 小标题、- 列表、**加粗**，其余按纯文本输出 */
+	const wrap = el("div", "update_notes_body");
+	String(text || "")
+		.split("\n")
+		.forEach((line) => {
+			const trimmed = line.trim();
+			if (!trimmed) {
+				return;
+			}
+			if (/^#{1,6}\s/.test(trimmed)) {
+				wrap.appendChild(el("div", "update_notes_group", trimmed.replace(/^#{1,6}\s*/, "")));
+				return;
+			}
+			const item = el("div", trimmed.startsWith("- ") ? "update_notes_item" : "update_notes_line");
+			const content = trimmed.replace(/^-\s+/, "").split("**");
+			content.forEach((piece, index) => {
+				if (!piece) {
+					return;
+				}
+				if (index % 2 === 1) {
+					item.appendChild(el("strong", "", piece));
+				} else {
+					item.appendChild(document.createTextNode(piece));
+				}
+			});
+			wrap.appendChild(item);
+		});
+	return wrap;
+}
+
+function renderUpdateState(status) {
+	document.getElementById("update_current").textContent = versionLabel(status.current);
+	document.getElementById("update_last").textContent = status.lastCheckAt
+		? formatTime(status.lastCheckAt)
+		: "从未检查";
+
+	const auto = document.getElementById("update_auto");
+	auto.checked = Boolean(status.autoCheck);
+	auto.parentElement.classList.toggle("is_on", Boolean(status.autoCheck));
+
+	const proxyInput = document.getElementById("update_proxy");
+	if (document.activeElement !== proxyInput) {
+		proxyInput.value = status.proxy || "";
+	}
+
+	const checkButton = document.getElementById("btn_check_update");
+	checkButton.disabled = Boolean(status.checking);
+	checkButton.textContent = status.checking ? "检查中…" : "检查更新";
+
+	const statusNode = document.getElementById("update_status");
+	statusNode.textContent = updateStatusText(status);
+
+	const progress = status.progress || {};
+	const phase = progress.phase || "";
+	const downloadButton = document.getElementById("btn_download_update");
+	const result = status.result || {};
+	const canDownload = Boolean(result.hasUpdate) && status.downloadable && !result.manualOnly;
+	if (phase === "downloaded") {
+		downloadButton.hidden = false;
+		downloadButton.textContent = "安装并重启";
+		downloadButton.disabled = false;
+	} else if (canDownload) {
+		downloadButton.hidden = false;
+		downloadButton.textContent = "下载并安装";
+		downloadButton.disabled = phase === "downloading";
+	} else {
+		downloadButton.hidden = true;
+	}
+
+	const bar = document.getElementById("update_progress");
+	const fill = document.getElementById("update_progress_bar");
+	if (progress.phase === "downloading" || progress.phase === "downloaded") {
+		bar.hidden = false;
+		fill.style.width = `${progress.phase === "downloaded" ? 100 : progress.percent || 0}%`;
+	} else {
+		bar.hidden = true;
+		fill.style.width = "0%";
+	}
+
+	const notesNode = document.getElementById("update_notes");
+	const releases = (result.releases || []).filter((entry) => entry.notes);
+	const fallback = result.hasUpdate && result.notes ? [{ version: result.latest, notes: result.notes }] : [];
+	const list = releases.length ? releases : fallback;
+	if (list.length && progress.phase !== "downloading") {
+		notesNode.hidden = false;
+		notesNode.innerHTML = "";
+		list.forEach((entry) => {
+			notesNode.appendChild(el("div", "update_notes_title", versionLabel(entry.version)));
+			notesNode.appendChild(renderNotesBody(entry.notes));
+		});
+	} else {
+		notesNode.hidden = true;
+		notesNode.innerHTML = "";
+	}
+}
+
+async function refreshUpdateStatus() {
+	const status = await getJson("/api/update/status");
+	renderUpdateState(status);
+	return status;
+}
+
+function scheduleUpdatePoll(delay = 3000) {
+	clearTimeout(updateUi.timer);
+	updateUi.timer = setTimeout(async () => {
+		let status = null;
+		try {
+			status = await refreshUpdateStatus();
+		} catch (error) {
+			status = null;
+		}
+		const progress = (status && status.progress) || {};
+		const busy = Boolean(status && (status.checking || progress.phase === "downloading"));
+		if (state.view === "settings") {
+			scheduleUpdatePoll(busy ? 1000 : 30000);
+		}
+	}, delay);
+}
+
+async function checkUpdate() {
+	await fetch("/api/update/check", { method: "POST" });
+	await refreshUpdateStatus();
+	scheduleUpdatePoll(1000);
+}
+
+async function toggleAutoUpdate() {
+	const next = !document.getElementById("update_auto").checked;
+	await fetch("/api/update/auto", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ enabled: next }),
+	});
+	await refreshUpdateStatus();
+	if (next) {
+		await checkUpdate();
+	}
+}
+
+async function saveProxy() {
+	const input = document.getElementById("update_proxy");
+	const payload = await fetch("/api/update/proxy", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ proxy: input.value.trim() }),
+	}).then((response) => response.json());
+	const statusNode = document.getElementById("update_status");
+	if (!payload.ok) {
+		statusNode.textContent = payload.message || "代理地址不正确";
+		return;
+	}
+	statusNode.textContent = payload.proxy
+		? `代理已保存：${payload.proxy}，正在重新检查…`
+		: "已关闭代理，正在重新检查…";
+	await fetch("/api/update/check", { method: "POST" });
+	await refreshUpdateStatus();
+	scheduleUpdatePoll(1000);
+}
+
+async function runUpdateAction() {
+	const button = document.getElementById("btn_download_update");
+	const progress = await getJson("/api/update/status").then((status) => status.progress || {});
+	if (progress.phase === "downloaded") {
+		const payload = await fetch("/api/update/install", { method: "POST" }).then((response) => response.json());
+		if (!payload.ok) {
+			document.getElementById("update_status").textContent = payload.message || "安装失败";
+			return;
+		}
+		document.getElementById("update_status").textContent = "程序即将关闭并完成更新…";
+		button.disabled = true;
+		setTimeout(() => window.close(), 1200);
+		return;
+	}
+	const payload = await fetch("/api/update/download", { method: "POST" }).then((response) => response.json());
+	if (!payload.ok) {
+		document.getElementById("update_status").textContent = payload.message || "下载失败";
+		return;
+	}
+	scheduleUpdatePoll(800);
 }
 
 function renderCategories(treePayload) {
@@ -2432,16 +2454,8 @@ async function init() {
 	state.mode = modes.current;
 	renderModeSwitch();
 
-	const [stats, gameMaps, traderList] = await Promise.all([
-		getJson("/api/stats"),
-		getJson("/api/game-maps").catch(() => ({ maps: [] })),
-		getJson("/api/traders").catch(() => ({ traders: [] })),
-	]);
-	state.gameMapCount = (gameMaps.maps || []).length;
-	state.traderCount = (traderList.traders || []).length;
-	renderHome(stats);
-	checkFirstRun(stats);
-	refreshSync();
+	await refreshAll();
+	await refreshSync();
 
 	showView("home");
 
@@ -2462,13 +2476,27 @@ async function init() {
 	});
 
 	document.getElementById("brand_home").addEventListener("click", goHome);
+	document.getElementById("btn_settings").addEventListener("click", openSettings);
+	document.getElementById("btn_check_update").addEventListener("click", checkUpdate);
+	document.getElementById("btn_save_proxy").addEventListener("click", saveProxy);
+	document.getElementById("update_proxy").addEventListener("keydown", (event) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			saveProxy();
+		}
+	});
+	document.getElementById("btn_download_update").addEventListener("click", runUpdateAction);
+	document.getElementById("update_auto").parentElement.addEventListener("click", (event) => {
+		event.preventDefault();
+		toggleAutoUpdate();
+	});
 	document.getElementById("btn_back").addEventListener("click", goHome);
-	document.getElementById("btn_back_cdk").addEventListener("click", goHome);
 	document.getElementById("btn_back_traders").addEventListener("click", goHome);
 	document.getElementById("btn_back_barters").addEventListener("click", goHome);
 	document.getElementById("btn_back_crafts").addEventListener("click", goHome);
 	document.getElementById("btn_back_hideout").addEventListener("click", goHome);
 	document.getElementById("btn_back_maps").addEventListener("click", goHome);
+	document.getElementById("btn_back_settings").addEventListener("click", goHome);
 
 	document.getElementById("map_image").addEventListener("click", () => {
 		if (state.currentMapImage) {
@@ -2477,21 +2505,6 @@ async function init() {
 	});
 	setupMapViewer();
 	setupQuickMap();
-
-	document.getElementById("btn_maps_sync").addEventListener("click", async (event) => {
-		event.target.disabled = true;
-		event.target.textContent = "同步中…";
-		await fetch("/api/game-maps/sync", { method: "POST" });
-		const timer = setInterval(async () => {
-			const payload = await getJson("/api/game-maps");
-			if (!payload.status || !payload.status.syncing) {
-				clearInterval(timer);
-				await loadMaps();
-				event.target.disabled = false;
-				event.target.textContent = "刷新地图数据";
-			}
-		}, 2000);
-	});
 
 	document.getElementById("barter_search").addEventListener("input", (event) => {
 		clearTimeout(state.barterTimer);
@@ -2509,15 +2522,6 @@ async function init() {
 			state.craftOffset = 0;
 			loadCrafts();
 		}, 250);
-	});
-
-	document.getElementById("btn_cdk_sync").addEventListener("click", async (event) => {
-		event.target.disabled = true;
-		event.target.textContent = "刷新中…";
-		await fetch("/api/cdk/sync", { method: "POST" });
-		await loadCdk();
-		event.target.disabled = false;
-		event.target.textContent = "刷新激活码";
 	});
 
 	document.querySelectorAll(".toggle").forEach((node) => {
@@ -2553,28 +2557,6 @@ async function init() {
 		}, 250);
 	});
 
-	document.getElementById("btn_sync").addEventListener("click", async () => {
-		await fetch("/api/sync/now", { method: "POST" });
-		await refreshSync();
-		const timer = setInterval(async () => {
-			const sync = await refreshSync();
-			if (!sync.running) {
-				clearInterval(timer);
-				const reloaded = await fetch("/api/data/reload", { method: "POST" }).then((response) => response.json());
-				renderHome(reloaded);
-				const categories = await getJson("/api/categories");
-				renderCategories(categories.tree);
-				if (state.view === "items") {
-					await loadItems();
-				}
-				if (state.view === "tasks") {
-					await loadTaskFilters();
-					await loadTasks();
-				}
-			}
-		}, 1500);
-	});
-
 	document.getElementById("drawer_close").addEventListener("click", closeDrawer);
 	document.getElementById("drawer_mask").addEventListener("click", closeDrawer);
 	document.addEventListener("keydown", (event) => {
@@ -2583,19 +2565,18 @@ async function init() {
 		}
 	});
 
-	setInterval(refreshSync, 60000);
-	attachHint(document.getElementById("btn_sync"), SYNC_HINTS.main);
-	attachHint(document.getElementById("btn_cdk_sync"), SYNC_HINTS.cdk);
-	attachHint(document.getElementById("btn_maps_sync"), SYNC_HINTS.maps);
-	attachHint(document.getElementById("btn_sync_all"), SYNC_HINTS.main);
-	attachHint(document.getElementById("btn_sync_guides"), SYNC_HINTS.guides);
-	attachHint(document.getElementById("btn_sync_cdk"), SYNC_HINTS.cdk);
-	attachHint(document.getElementById("btn_sync_maps"), SYNC_HINTS.maps);
+	/* 图片下载失败时藏起来，避免界面上出现一片破图标 */
+	document.addEventListener(
+		"error",
+		(event) => {
+			if (event.target instanceof HTMLImageElement) {
+				event.target.classList.add("img_failed");
+			}
+		},
+		true,
+	);
 
-	bindSyncButton("btn_sync_all", "/api/sync/now", "游戏数据");
-	bindSyncButton("btn_sync_guides", "/api/guides/sync", "任务攻略");
-	bindSyncButton("btn_sync_cdk", "/api/cdk/sync", "激活码");
-	bindSyncButton("btn_sync_maps", "/api/game-maps/sync", "地图数据");
+	document.getElementById("btn_sync_all").addEventListener("click", rebuildGameData);
 }
 
 function setSyncMessage(text) {
@@ -2605,78 +2586,49 @@ function setSyncMessage(text) {
 	}
 }
 
-function bindSyncButton(id, url, label) {
-	const button = document.getElementById(id);
-	if (!button) {
-		return;
+async function afterDataSync() {
+	await refreshAll();
+	document.getElementById("category_tree").replaceChildren();
+	if (state.view === "items") {
+		const categories = await getJson("/api/categories");
+		renderCategories(categories.tree);
+		await loadItems();
 	}
-	button.addEventListener("click", async () => {
-		button.disabled = true;
-		const original = button.textContent;
-		button.textContent = "同步中…";
-		setSyncMessage(`正在同步${label}…`);
-		try {
-			await fetch(url, { method: "POST" });
-			setSyncMessage(`${label}同步已开始，完成后会更新界面`);
-		} catch (error) {
-			setSyncMessage(`${label}同步失败：${error.message}`);
-		} finally {
-			setTimeout(() => {
-				button.disabled = false;
-				button.textContent = original;
-			}, 2500);
-		}
-	});
+	if (state.view === "tasks") {
+		await loadTaskFilters();
+		await loadTasks();
+	}
+	if (["maps", "traders", "barters", "crafts", "hideout"].includes(state.view)) {
+		await openModule(state.view);
+	}
 }
 
-/* 同步按钮的说明气泡：讲清点了会发生什么 */
-
-const SYNC_HINTS = {
-	main: "从 json.tarkov.dev 拉取三种模式（PVE / PVP / SEASON）的物品、任务、地图、商人、兑换配方、藏身处数据。\n数据没变时只发比对请求，不会重复下载。",
-	guides: "从 TarkovBox 和 OPtarkov 两个站点抓取任务攻略正文与实景截图。\n抓取量大，耗时约 5-10 分钟。",
-	cdk: "从 OPtarkov 获取当前有效的激活码（CDK）和可兑换物品清单。",
-	maps: "从 TarkovBox 抓取 13 张地图的标注点位数据。\n原图按需下载（每张约 10-15MB），看过一次就存在本地。",
-};
-
-function attachHint(node, text) {
-	if (!node) {
-		return;
-	}
-	let tip = null;
-	const show = () => {
-		if (tip) {
+async function rebuildGameData() {
+	const button = document.getElementById("btn_sync_all");
+	button.disabled = true;
+	setSyncMessage("正在从 Tarkov.dev 重建三种模式的资料…");
+	try {
+		const response = await fetch("/api/sync/now", { method: "POST" });
+		if (!response.ok) {
+			throw new Error(`请求失败 ${response.status}`);
+		}
+		let sync = await refreshSync();
+		while (sync.running) {
+			await new Promise((resolve) => setTimeout(resolve, 750));
+			sync = await refreshSync();
+		}
+		if (!sync.lastResult?.ok) {
+			const issue = sync.lastResult?.errors?.[0];
+			setSyncMessage(issue ? `重建失败 ${issue.mode} ${issue.key} · ${issue.error}` : "重建失败，请重试");
 			return;
 		}
-		const box = node.getBoundingClientRect();
-		tip = el("div", "hint_bubble", text);
-		document.body.appendChild(tip);
-		const width = tip.offsetWidth;
-		const height = tip.offsetHeight;
-		let left = box.left + box.width / 2 - width / 2;
-		if (left < 12) {
-			left = 12;
-		}
-		const maxLeft = window.innerWidth - width - 12;
-		if (left > maxLeft) {
-			left = Math.max(12, maxLeft);
-		}
-		let top = box.top - height - 10;
-		if (top < 60) {
-			top = box.bottom + 10;
-		}
-		tip.style.left = `${left}px`;
-		tip.style.top = `${top}px`;
-	};
-	const hide = () => {
-		if (tip) {
-			tip.remove();
-			tip = null;
-		}
-	};
-	node.addEventListener("mouseenter", show);
-	node.addEventListener("mouseleave", hide);
-	node.addEventListener("click", hide);
-	node.addEventListener("blur", hide);
+		setSyncMessage("三种模式的资料已更新");
+		await afterDataSync();
+	} catch (error) {
+		setSyncMessage(`无法读取重建状态 · ${error.message}`);
+	} finally {
+		button.disabled = false;
+	}
 }
 
 init().catch((error) => {

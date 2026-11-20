@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import os
 import threading
+from pathlib import Path
 
 from anyio import CapacityLimiter, to_thread
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import paths
 from .assets import IconCache, SvgCache
 from .datasets import DEFAULT_MODE, GAME_MODES, MODE_ORDER, is_valid_mode
+from .map_atlas import AtlasCache
 from .mapconfig import MapConfig
 from .maps import build_map_detail, build_map_summary
 from .progress import ProgressStore
@@ -77,6 +79,7 @@ def create_app(
 	map_config = MapConfig()
 	svg_cache = SvgCache(paths.CACHE_DIR)
 	updater = Updater(paths.DATA_DIR)
+	atlas = AtlasCache(paths.DATA_DIR / "maps" / "images")
 	map_assets = {url: key for key, url in map_config.svg_jobs()}
 	media_workers = None
 
@@ -282,7 +285,7 @@ def create_app(
 
 	@app.get("/api/game-maps")
 	def game_maps(store: DataStore = Depends(current_store)) -> dict:
-		return {"ok": True, "maps": [build_map_summary(store, map_id, map_config) for map_id in store.maps]}
+		return {"ok": True, "maps": [build_map_summary(store, map_id, map_config) for map_id in store.visible_map_ids()]}
 
 	@app.get("/api/game-maps/{slug}")
 	def game_map_detail(slug: str, store: DataStore = Depends(current_store)):
@@ -291,13 +294,19 @@ def create_app(
 			return {"ok": True, "map": build_map_detail(store, map_id, map_config)}
 		return JSONResponse({"ok": False, "error": "找不到该地图"}, status_code=404)
 
+	def map_image_path(url: str) -> Path | None:
+		key = map_assets.get(url)
+		if key:
+			return svg_cache.cache.fetch_path(svg_cache.local_path(key), url)
+		return atlas.get(url)
+
 	@app.get("/api/game-map/image")
 	async def game_map_image(url: str):
-		key = map_assets.get(url)
-		text = await load_media(svg_cache.get, key, url) if key else None
-		if not text:
+		local = await load_media(map_image_path, url)
+		if local is None:
 			return Response(status_code=404)
-		return Response(content=text, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
+		media = {".svg": "image/svg+xml", ".webp": "image/webp", ".jpg": "image/jpeg"}
+		return FileResponse(local, media_type=media[local.suffix], headers={"Cache-Control": "public, max-age=604800"})
 
 	@app.post("/api/open-file")
 	async def open_file(payload: dict):
@@ -305,8 +314,7 @@ def create_app(
 		url = (payload or {}).get("url")
 		if not isinstance(url, str) or not url:
 			return JSONResponse({"ok": False, "error": "缺少图片地址"}, status_code=400)
-		key = map_assets.get(url)
-		local = await load_media(svg_cache.cache.fetch_path, svg_cache.local_path(key), url) if key else None
+		local = await load_media(map_image_path, url)
 		if local is None:
 			return JSONResponse({"ok": False, "error": "图片还没下载好，请稍后重试"}, status_code=404)
 		try:

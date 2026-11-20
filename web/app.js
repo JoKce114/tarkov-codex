@@ -1024,7 +1024,7 @@ function renderQuickMapList(maps) {
 		item.addEventListener("click", () => {
 			hideQuickMap();
 			if (entry.previewUrl) {
-				openMapViewer(entry.previewUrl, entry.name || "地图");
+				openMapViewer(entry.originalUrl || entry.previewUrl, entry.name || "地图", entry.previewUrl);
 			} else {
 				showView("maps");
 				loadMaps(entry.slug);
@@ -1195,6 +1195,7 @@ function renderMapDetail(map) {
 				state.currentMapImage = image.url;
 				state.currentMapOriginal = image.originalUrl || image.url;
 				state.currentMapTitle = `${map.name || ""} · ${image.title || ""}`;
+				imageNode.alt = image.title || map.name;
 				imageNode.src = mapImageUrl(image.url);
 				wrap.classList.remove("is_zoomed");
 			});
@@ -1648,12 +1649,22 @@ function viewerZoom(factor, centerX, centerY) {
 	viewerApply();
 }
 
-function openMapViewer(url, title) {
+function openMapViewer(url, title, previewUrl = "") {
 	viewer.sourceUrl = url;
-	document.getElementById("viewer_title").textContent = title || "地图";
+	const heading = document.getElementById("viewer_title");
+	heading.textContent = title || "地图";
 	const image = document.getElementById("viewer_image");
 	const container = document.getElementById("map_viewer");
-	image.onload = () => viewerFit();
+	image.onload = viewerFit;
+	image.onerror = () => {
+		if (previewUrl && viewer.sourceUrl !== previewUrl) {
+			viewer.sourceUrl = previewUrl;
+			heading.textContent = (title || "地图") + "（预览图）";
+			image.src = mapImageUrl(previewUrl);
+			return;
+		}
+		heading.textContent = (title || "地图") + "（图片加载失败）";
+	};
 	container.hidden = false;
 	image.src = mapImageUrl(url);
 	if (image.complete) {
@@ -1686,7 +1697,7 @@ function setupMapViewer() {
 			const payload = await fetch("/api/open-file", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ url: state.currentMapOriginal || viewer.sourceUrl }),
+				body: JSON.stringify({ url: viewer.sourceUrl }),
 			}).then((response) => response.json());
 			button.textContent = payload.ok ? "已打开" : `失败：${payload.error || "未知"}`;
 		} catch (error) {
@@ -2500,7 +2511,7 @@ async function init() {
 
 	document.getElementById("map_image").addEventListener("click", () => {
 		if (state.currentMapImage) {
-			openMapViewer(state.currentMapImage, state.currentMapTitle || "地图");
+			openMapViewer(state.currentMapOriginal || state.currentMapImage, state.currentMapTitle, state.currentMapImage);
 		}
 	});
 	setupMapViewer();

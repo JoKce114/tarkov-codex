@@ -1,35 +1,49 @@
 from collections import Counter
 
+from .map_atlas import ATLAS
 from .mapconfig import MapConfig
 from .store import DataStore
 
 
-def build_map_summary(store: DataStore, map_id: str, config: MapConfig) -> dict:
-	row = store.maps[map_id]
-	slug = row.get("normalizedName") or map_id
+def _map_images(slug: str, config: MapConfig) -> list[dict]:
 	asset = config.entry_by_normalized(slug) or {}
+	images = list(ATLAS.get(asset.get("normalized") or slug, ()))
+	if asset.get("svg"):
+		images.append({"title": "地图底图", "url": asset["svg"], "originalUrl": asset["svg"]})
+	return images
+
+
+def _summary(row: dict, slug: str, images: list[dict]) -> dict:
+	main = images[0] if images else {}
 	return {
 		"slug": slug,
 		"name": row.get("name") or slug,
 		"players": row.get("players"),
 		"raidDuration": row.get("raidDuration"),
 		"exitCount": len(row.get("extracts") or []),
-		"previewUrl": asset.get("svg") or "",
+		"previewUrl": main.get("url", ""),
+		"originalUrl": main.get("originalUrl", ""),
 	}
+
+
+def build_map_summary(store: DataStore, map_id: str, config: MapConfig) -> dict:
+	row = store.maps[map_id]
+	slug = row.get("normalizedName") or map_id
+	return _summary(row, slug, _map_images(slug, config))
 
 
 def build_map_detail(store: DataStore, map_id: str, config: MapConfig) -> dict:
 	row = store.maps[map_id]
-	summary = build_map_summary(store, map_id, config)
-	url = summary["previewUrl"]
+	slug = row.get("normalizedName") or map_id
+	images = _map_images(slug, config)
 	key_counts = Counter(lock["key"] for lock in row.get("locks") or [] if lock.get("key"))
 	for key in row.get("accessKeys") or []:
 		key_counts.setdefault(key, 0)
 	return {
-		**summary,
+		**_summary(row, slug, images),
 		"description": row.get("description") or "",
 		"wiki": row.get("wiki") or "",
-		"images": [{"title": "地图底图", "url": url}] if url else [],
+		"images": images,
 		"exits": row.get("extracts") or [],
 		"bosses": [
 			{

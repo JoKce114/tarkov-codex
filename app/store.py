@@ -201,6 +201,12 @@ class DataStore:
 					if not any(entry.get("id") == task.get("id") for entry in bucket):
 						bucket.append(task)
 
+	def visible_map_ids(self) -> list[str]:
+		return [
+			map_id for map_id, entry in self.maps.items()
+			if (entry.get("normalizedName") or map_id) != "ground-zero-tutorial"
+		]
+
 	def stats(self) -> dict:
 		with self._lock:
 			return {
@@ -211,7 +217,7 @@ class DataStore:
 				"counts": {
 					"items": len(self.items),
 					"tasks": len(self.tasks),
-					"maps": len(self.maps),
+					"maps": len(self.visible_map_ids()),
 					"traders": len(self.traders),
 					"hideout": len(self.hideout),
 					"barters": len(self.barters),

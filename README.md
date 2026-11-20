@@ -23,7 +23,7 @@ python -m app.main
 
 打包版自带出厂资料。开发环境没有资料时，点击首页「重建全部资料」下载三种模式的数据。
 重建在后台进行，已有资料仍可查询。新资料校验通过后一次启用。
-图标和地图底图按需加载并缓存到本地。
+普通地图默认显示 TarkovBox 中文标注图，点击预览可查看高清原图。首次查看需要联网，已缓存的图片可离线打开。
 
 ## 打包
 
@@ -52,9 +52,10 @@ GitHub API 配额），确认有新版本才调一次接口取更新说明。被
 | 内容 | 来源 |
 |---|---|
 | 物品、任务、地图、商人、配方 | [json.tarkov.dev](https://json.tarkov.dev) |
-| 图标与地图底图 | [assets.tarkov.dev](https://assets.tarkov.dev) |
+| 普通地图中文标注图 | [TarkovBox](https://www.tarkovbox.com/maps/download) |
+| 图标与任务地图底图 | [assets.tarkov.dev](https://assets.tarkov.dev) |
 
-游戏资料和图片由 Tarkov.dev 提供，生成的缓存和出厂资料不纳入版本控制。
+生成的缓存和出厂资料不纳入版本控制。
 
 ## 目录结构
 
